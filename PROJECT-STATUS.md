@@ -1,6 +1,6 @@
 # Siege & Scepter — Project Status
 
-Updated: 2026-07-11 (session 2 — first fully verified state)
+Updated: 2026-07-11 (session 2 — verified, tested, CI green)
 
 ## Decisions made (approved by Tanel)
 
@@ -23,8 +23,12 @@ Updated: 2026-07-11 (session 2 — first fully verified state)
 - `apps/web` — React SPA: auth form, city screen with live-predicted resource bar
   (client predicts via shared domain functions, server stays authoritative),
   building cards with cost/prereq gating, construction queue with countdowns. Dark
-  medieval-ish CSS, mobile-friendly.
+  medieval-ish CSS, mobile-friendly. 10 component tests (Vitest + Testing Library,
+  jsdom): button labels incl. the queued-order regression, prereq gating,
+  queue-full state, resource bar, queue rendering, AuthForm mode toggle.
 - Drizzle migration `0000_sticky_prodigy.sql` generated, reviewed, applied to `siege_dev`.
+- `.github/workflows/ci.yml` — GitHub Actions: pnpm install → typecheck → lint →
+  full test suite against a Postgres 17 service container. Green on `main`.
 
 ## Verified this session (2026-07-11, Tanel's Windows machine)
 
@@ -77,8 +81,8 @@ Updated: 2026-07-11 (session 2 — first fully verified state)
 
 ## Next steps
 
-1. Decide the next slice (population system? second city? research?) against the
-   design doc's MVP staging (section 36).
-2. Add web tests (the `apps/web` test script is still a placeholder).
-3. Consider CI (GitHub Actions: typecheck + lint + test with a Postgres service).
-4. Keep "How to Work in This Project.md" section 42 in sync (updated this session).
+1. Next slice: population system (design doc progression step 3 — deferred earlier;
+   production should come from allocated workers, not directly from building levels).
+   Alternatives considered: current-slice polish (queue cancellation etc.) or a
+   public deploy.
+2. Keep "How to Work in This Project.md" section 42 in sync (updated this session).
