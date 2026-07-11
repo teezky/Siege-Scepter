@@ -9,6 +9,4 @@ coverage/
 .DS_Store
 
 # Local Claude Code harness config (machine-specific absolute paths)
-.claude/settings.local.json
-.claude/launch.json
-.claude/dev-runner.mjs
+.claude/
