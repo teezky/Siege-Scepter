@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"],
+    "module": "ESNext",
+    "moduleResolution": "bundler"
+  },
+  "include": ["src", "test", "drizzle.config.ts"]
+}

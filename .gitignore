@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+coverage/
+*.log
+.env
+.env.local
+.pgdata/
+.DS_Store
+
+# Local Claude Code harness config (machine-specific absolute paths)
+.claude/settings.local.json
+.claude/launch.json
+.claude/dev-runner.mjs
