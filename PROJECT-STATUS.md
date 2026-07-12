@@ -1,6 +1,6 @@
 # Siege & Scepter — Project Status
 
-Updated: 2026-07-12 (session 3 — population shipped; research implemented and verified)
+Updated: 2026-07-12 (session 4 — research shipped; simple army + PvE implemented)
 
 ## Decisions made (approved by Tanel)
 
@@ -13,29 +13,28 @@ Updated: 2026-07-12 (session 3 — population shipped; research implemented and 
 
 ## What exists (committed and pushed, branch `main`)
 
-- `packages/shared` — typed game config (5 resources; 7 buildings: townHall, warehouse,
-  house, sawmill, quarry, farm, ironMine; population constants), pure domain math
+- `packages/shared` — typed game config (6 resources; 8 buildings including house and
+  academy; population and research constants), pure domain math
   (exponential costs/times, worker-based production, event-driven population+resource
-  simulation `advanceCity` shared by server and client), API contract types. 34 unit
+  simulation `advanceCity`, research effects shared by server and client), API contracts. 45 unit
   tests, all green.
 - `apps/server` — Fastify app: auth domain (argon2 + hashed session tokens + cookie,
   rate-limited), cities domain (first city on registration, lazy idempotent construction
   finalization inside row-locked transactions, chronological offline queue processing,
-  `PUT /api/cities/:id/workers` worker allocation with slot/population validation),
-  structured error contract. 22 integration tests against real Postgres, all green.
+  worker allocation and player-global research with authoritative validation),
+  structured error contract. 27 integration tests against real Postgres, all green.
 - `apps/web` — React SPA: auth form, city screen with live-predicted resource bar
   AND population (client runs the same `advanceCity` simulation, server stays
   authoritative), population panel (housing, free citizens/taxes, next-arrival
   countdown, famine warnings), worker +/− allocation controls on production
-  buildings, building cards with cost/prereq gating, construction queue with
-  countdowns. Dark medieval-ish CSS, mobile-friendly. 15 component tests.
-- Drizzle migrations `0000_sticky_prodigy.sql` + `0001_cold_unus.sql` (population
-  columns, workers, drops stored rate_per_hour — rates are derived now), applied
-  to `siege_dev`.
+  buildings, research panel, building cards with cost/prereq gating, and construction
+  queue with countdowns. Dark medieval-ish CSS, mobile-friendly. 18 component tests.
+- Drizzle migrations `0000`–`0002` (foundation, population and research), applied to
+  `siege_dev`.
 - `.github/workflows/ci.yml` — GitHub Actions: pnpm install → typecheck → lint →
   full test suite against a Postgres 17 service container. Green on `main`.
 
-## Research system (slice 3, implemented and verified this session)
+## Research system (slice 3, shipped on `main`)
 
 - 6th resource `knowledge`: produced by scientists (workers) in the new
   `academy` building (prereq: town hall 2; 4 slots/level, 6 knowledge/h each),
@@ -57,6 +56,24 @@ Updated: 2026-07-12 (session 3 — population shipped; research implemented and 
 - `POST /api/research { techId }`; CityView gained `researchedTechs`.
 - Web: Research panel (branch-labelled tech cards, prereq/cost gating),
   knowledge in the resource bar, effects-aware prediction and worker slots.
+
+## Simple army + PvE (slice 4, implemented on `codex/pve-army`)
+
+- New `barracks` building (town hall 2 prerequisite) and two recruitable units:
+  spearmen (10 power) and archers (16 power), with centralized costs and stats.
+- Soldiers reserve citizens from worker allocation and tax income; they remain part
+  of total population and therefore already consume food through population upkeep.
+- Two sequential one-time local threats: Bandit Camp (60 power) and Raider Outpost
+  (140 power), with storage-aware resource rewards.
+- Deterministic server-side battle resolution uses the whole available army and
+  produces bounded population losses plus a persisted battle report; housing allows
+  the city to recover naturally after a defeat.
+- City-row locking + unique completion rows make attacks and rewards retry-safe:
+  the same encounter cannot grant its reward twice.
+- Dedicated military API and UI: army overview, quantity-based recruitment, encounter
+  gates, attack actions, completion state and recent battle reports.
+- Drizzle migration `0003_motionless_titania.sql`: city units, player PvE completions
+  and battle reports; applied to `siege_dev`.
 
 ## Population system (slice 2, shipped this session)
 
@@ -89,6 +106,13 @@ Updated: 2026-07-12 (session 3 — population shipped; research implemented and 
 - ESLint and the production web build — green.
 - `git diff --check` — clean.
 
+## Verified simple army + PvE slice (2026-07-12)
+
+- Shared, server and web TypeScript checks — all green.
+- 104 automated tests — all green: 49 shared domain tests, 33 server integration
+  tests against PostgreSQL, and 22 web component tests.
+- ESLint, production web build and `git diff --check` — green.
+
 ## Bugs found & fixed while verifying (the code had never run before)
 
 - Server `.env` was never loaded — added `--env-file=.env` to tsx scripts.
@@ -115,6 +139,11 @@ Updated: 2026-07-12 (session 3 — population shipped; research implemented and 
 - Only one `house` building per city (city_buildings PK is city+building);
   multiple house plots arrive with the visual city map.
 - Satisfaction (design doc 11.3) not modeled yet.
+- Recruitment is instant in the first PvE slice; a persisted training queue is deferred.
+- The whole available army fights; partial deployments, formations, commanders,
+  equipment, wounded units and travel time are deferred to later military slices.
+- All current unit losses reduce population; the later wounded-unit system will
+  split losses into fatalities, recovery and temporary unavailability.
 
 ## Local dev environment (Tanel's Windows machine)
 
@@ -135,7 +164,7 @@ Updated: 2026-07-12 (session 3 — population shipped; research implemented and 
 
 ## Next steps
 
-1. Next slice candidates (design doc progression, section 6): PvE encounter +
-   simple army (step 6), current-slice polish (queue cancellation, satisfaction),
-   or a public deploy so friends can test.
-2. Keep "How to Work in This Project.md" section 42 in sync.
+1. Merge the simple army + PvE slice after review and CI.
+2. Next progression slice: second city, followed by the world map.
+3. Parallel candidates: queue cancellation, satisfaction, or a public deploy so
+   friends can test the complete economy → research → PvE loop.

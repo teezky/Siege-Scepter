@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import type { CityView, ConstructionOrderView } from '@siege/shared';
+import { PVE_ENCOUNTERS, type CityView, type ConstructionOrderView, type MilitaryView } from '@siege/shared';
 import { CityScreen } from '../src/components/CityScreen.js';
 
 function makeCity(overrides: Partial<CityView> = {}): CityView {
@@ -21,12 +21,24 @@ function makeCity(overrides: Partial<CityView> = {}): CityView {
       total: 12,
       housingCapacity: 30,
       freeCitizens: 4,
+      soldiers: 0,
       nextArrivalAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
     },
     constructionQueue: [],
     researchedTechs: [],
     serverTime: new Date().toISOString(),
     ...overrides
+  };
+}
+
+function makeMilitary(): MilitaryView {
+  return {
+    army: { units: { spearman: 0, archer: 0 }, totalUnits: 0, power: 0 },
+    encounters: [
+      { ...PVE_ENCOUNTERS.banditCamp, completed: false, locked: false },
+      { ...PVE_ENCOUNTERS.raiderOutpost, completed: false, locked: true }
+    ],
+    recentReports: []
   };
 }
 
@@ -45,7 +57,9 @@ function inProgressOrder(overrides: Partial<ConstructionOrderView> = {}): Constr
 }
 
 const noopProps = {
+  military: makeMilitary(),
   onCityUpdated: () => undefined,
+  onMilitaryUpdated: () => undefined,
   onRefresh: () => Promise.resolve()
 };
 
@@ -138,7 +152,7 @@ describe('CityScreen population', () => {
 
   it('shows the housing-full message instead of an arrival countdown', () => {
     const city = makeCity({
-      population: { total: 30, housingCapacity: 30, freeCitizens: 22, nextArrivalAt: null }
+      population: { total: 30, housingCapacity: 30, freeCitizens: 22, soldiers: 0, nextArrivalAt: null }
     });
     render(<CityScreen city={city} {...noopProps} />);
     const panel = screen.getByRole('region', { name: 'Population' });

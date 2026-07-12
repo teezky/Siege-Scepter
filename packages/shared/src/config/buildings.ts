@@ -18,12 +18,13 @@ export const BUILDING_IDS = [
   'quarry',
   'farm',
   'ironMine',
-  'academy'
+  'academy',
+  'barracks'
 ] as const;
 
 export type BuildingId = (typeof BUILDING_IDS)[number];
 
-export type BuildingCategory = 'core' | 'storage' | 'housing' | 'production';
+export type BuildingCategory = 'core' | 'storage' | 'housing' | 'production' | 'military';
 
 export interface BuildingPrerequisite {
   buildingId: BuildingId;
@@ -156,6 +157,16 @@ export const BUILDINGS: Record<BuildingId, BuildingDefinition> = {
     // Workers assigned here are the city's scientists (design doc 11.1);
     // knowledge is never tradable and not storage-capped (design doc 9).
     production: { resource: 'knowledge', perWorkerPerHour: 6, workerSlotsPerLevel: 4 },
+    prerequisites: [{ buildingId: 'townHall', level: 2 }]
+  },
+  barracks: {
+    id: 'barracks',
+    category: 'military',
+    maxLevel: 20,
+    baseCost: { wood: 120, stone: 80, iron: 20 },
+    costGrowthFactor: 1.5,
+    baseBuildSeconds: 60,
+    buildTimeGrowthFactor: 1.5,
     prerequisites: [{ buildingId: 'townHall', level: 2 }]
   }
 };

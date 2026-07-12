@@ -9,6 +9,7 @@ import {
   TECHS,
   TECH_IDS,
   advanceCity,
+  armyPopulation,
   assignedWorkers,
   buildingLevelCost,
   buildingLevelSeconds,
@@ -39,10 +40,11 @@ import {
 } from '../../db/schema.js';
 import type { Clock } from '../../lib/clock.js';
 import { AppError } from '../../lib/errors.js';
+import { loadArmy } from '../military/repository.js';
 
 /** Drizzle transaction handle (structurally identical to Database for queries). */
 export type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
-type DbOrTx = Database | Tx;
+export type DbOrTx = Database | Tx;
 
 const ARRIVAL_INTERVAL_MS = POPULATION.arrivalIntervalMinutes * 60_000;
 
@@ -59,7 +61,7 @@ function isTechId(value: string): value is TechId {
 }
 
 /** Researched techs of a player (player-global, unlike city state). */
-async function loadResearch(tx: DbOrTx, playerId: string): Promise<TechId[]> {
+export async function loadResearch(tx: DbOrTx, playerId: string): Promise<TechId[]> {
   const rows = await tx
     .select({ techId: playerResearch.techId })
     .from(playerResearch)
@@ -101,16 +103,17 @@ export async function foundFirstCity(tx: Tx, playerId: string, name: string, now
   return city.id;
 }
 
-interface LoadedCity {
+export interface LoadedCity {
   id: string;
   name: string;
   playerId: string;
   population: number;
   nextArrivalAt: Date | null;
+  soldiers: number;
 }
 
 /** Loads and row-locks the city, verifying ownership. */
-async function lockCity(tx: Tx, cityId: string, playerId: string): Promise<LoadedCity> {
+export async function lockCity(tx: Tx, cityId: string, playerId: string): Promise<LoadedCity> {
   const [city] = await tx
     .select({
       id: cities.id,
@@ -124,10 +127,11 @@ async function lockCity(tx: Tx, cityId: string, playerId: string): Promise<Loade
     .for('update');
   if (!city) throw new AppError('NOT_FOUND', 'City not found');
   if (city.playerId !== playerId) throw new AppError('PERMISSION_DENIED', 'You do not own this city');
-  return city;
+  const army = await loadArmy(tx, cityId);
+  return { ...city, soldiers: armyPopulation(army) };
 }
 
-async function loadBuildings(tx: DbOrTx, cityId: string): Promise<CityBuildingState[]> {
+export async function loadBuildings(tx: DbOrTx, cityId: string): Promise<CityBuildingState[]> {
   const rows = await tx
     .select({
       buildingId: cityBuildings.buildingId,
@@ -168,6 +172,7 @@ function toSimState(city: LoadedCity, rows: ResourceRow[]): CitySimState {
   return {
     amounts,
     population: city.population,
+    reservedPopulation: city.soldiers,
     nextArrivalAtMs: city.nextArrivalAt ? city.nextArrivalAt.getTime() : null,
     refTimeMs
   };
@@ -179,7 +184,7 @@ function toSimState(city: LoadedCity, rows: ResourceRow[]): CitySimState {
  * with `at` as the new reference time. Returns the settled amounts.
  * Throws INSUFFICIENT_RESOURCES if `adjust` cannot be paid.
  */
-async function settleCity(
+export async function settleCity(
   tx: Tx,
   city: LoadedCity,
   buildings: CityBuildingState[],
@@ -305,6 +310,7 @@ export interface CityState {
   name: string;
   population: number;
   nextArrivalAt: Date | null;
+  soldiers: number;
   researchedTechs: TechId[];
   buildings: CityBuildingState[];
   resourceRows: ResourceRow[];
@@ -319,7 +325,11 @@ export interface CityState {
   }[];
 }
 
-async function loadCityState(tx: DbOrTx, city: LoadedCity, researchedTechs: TechId[]): Promise<CityState> {
+export async function loadCityState(
+  tx: DbOrTx,
+  city: LoadedCity,
+  researchedTechs: TechId[]
+): Promise<CityState> {
   const buildings = await loadBuildings(tx, city.id);
   const resourceRows = await loadResourceRows(tx, city.id);
   const orderRows = await tx
@@ -338,6 +348,7 @@ async function loadCityState(tx: DbOrTx, city: LoadedCity, researchedTechs: Tech
     name: city.name,
     population: city.population,
     nextArrivalAt: city.nextArrivalAt,
+    soldiers: city.soldiers,
     researchedTechs,
     buildings,
     resourceRows,
@@ -513,10 +524,11 @@ export async function setWorkerAllocation(
       workers: BUILDINGS[b.buildingId].production ? (allocation[b.buildingId] ?? 0) : 0
     }));
     const total = assignedWorkers(next);
-    if (total > city.population) {
+    if (total + city.soldiers > city.population) {
       throw new AppError('INSUFFICIENT_RESOURCES', 'Not enough citizens for this allocation', {
         population: city.population,
-        requested: total
+        soldiers: city.soldiers,
+        requestedWorkers: total
       });
     }
 

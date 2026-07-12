@@ -1,14 +1,18 @@
 import type {
   ApiError,
+  AttackPveResponse,
   AuthResponse,
   BuildingId,
   CityView,
   LoginRequest,
+  MilitaryView,
   RegisterRequest,
   ResearchTechResponse,
+  RecruitUnitsResponse,
   SetWorkersResponse,
   StartConstructionResponse,
-  TechId
+  TechId,
+  UnitId
 } from '@siege/shared';
 
 export class ApiRequestError extends Error {
@@ -45,6 +49,7 @@ export const api = {
   logout: () => request<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
   me: () => request<AuthResponse>('/api/auth/me'),
   getCity: () => request<{ city: CityView }>('/api/city'),
+  getMilitary: () => request<{ military: MilitaryView }>('/api/military'),
   startConstruction: (cityId: string, buildingId: string) =>
     request<StartConstructionResponse>(`/api/cities/${cityId}/constructions`, {
       method: 'POST',
@@ -59,5 +64,14 @@ export const api = {
     request<ResearchTechResponse>('/api/research', {
       method: 'POST',
       body: JSON.stringify({ techId })
+    }),
+  recruitUnits: (cityId: string, unitId: UnitId, quantity: number) =>
+    request<RecruitUnitsResponse>(`/api/cities/${cityId}/units`, {
+      method: 'POST',
+      body: JSON.stringify({ unitId, quantity })
+    }),
+  attackPve: (encounterId: string) =>
+    request<AttackPveResponse>(`/api/pve/${encounterId}/attack`, {
+      method: 'POST'
     })
 };

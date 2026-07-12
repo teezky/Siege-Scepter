@@ -308,6 +308,65 @@ button.link {
   gap: 0.75rem;
 }
 
+.unit-grid,
+.encounter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.unit-card,
+.encounter-card {
+  background: var(--panel-light);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.unit-card header,
+.encounter-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.unit-card h3,
+.encounter-card h3,
+.battle-reports h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.unit-card label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.unit-card input {
+  width: 5rem;
+  padding: 0.4rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+
+.encounter-card.completed {
+  border-color: var(--success);
+}
+
+.battle-reports {
+  margin-top: 1rem;
+}
+
 .building-card {
   background: var(--panel-light);
   border: 1px solid var(--border);
@@ -365,6 +424,11 @@ button.link {
   }
 
   .building-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .unit-grid,
+  .encounter-grid {
     grid-template-columns: 1fr;
   }
 }

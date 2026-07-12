@@ -1,4 +1,14 @@
-import { BUILDINGS, STARTING_RESOURCES, buildingLevelCost, buildingLevelSeconds, type CityView } from '@siege/shared';
+import {
+  BUILDINGS,
+  STARTING_RESOURCES,
+  buildingLevelCost,
+  buildingLevelSeconds,
+  type AttackPveResponse,
+  type CityView,
+  type MilitaryView,
+  type RecruitUnitsResponse,
+  type UnitId
+} from '@siege/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createTestContext, registerTestPlayer, type TestContext, type TestPlayer } from './helpers.js';
 
@@ -40,6 +50,33 @@ async function setWorkers(player: TestPlayer, allocation: Record<string, number>
   });
 }
 
+async function getMilitary(player: TestPlayer): Promise<MilitaryView> {
+  const response = await ctx.app.inject({
+    method: 'GET',
+    url: '/api/military',
+    headers: { cookie: player.cookie }
+  });
+  expect(response.statusCode).toBe(200);
+  return (JSON.parse(response.body) as { military: MilitaryView }).military;
+}
+
+async function recruit(player: TestPlayer, unitId: UnitId, quantity: number) {
+  return ctx.app.inject({
+    method: 'POST',
+    url: `/api/cities/${player.cityId}/units`,
+    headers: { cookie: player.cookie },
+    payload: { unitId, quantity }
+  });
+}
+
+async function attack(player: TestPlayer, encounterId: string) {
+  return ctx.app.inject({
+    method: 'POST',
+    url: `/api/pve/${encounterId}/attack`,
+    headers: { cookie: player.cookie }
+  });
+}
+
 describe('registration and first city', () => {
   it('creates a city with starting buildings, workers and resources', async () => {
     const player = await registerTestPlayer(ctx, 'founder');
@@ -63,6 +100,7 @@ describe('registration and first city', () => {
     expect(city.population.total).toBe(12);
     expect(city.population.housingCapacity).toBe(30); // base 10 + town hall 20
     expect(city.population.freeCitizens).toBe(4);
+    expect(city.population.soldiers).toBe(0);
     expect(city.population.nextArrivalAt).not.toBeNull();
   });
 
@@ -403,6 +441,120 @@ describe('research', () => {
     ctx.clock.advanceMs(31 * 60 * 1000); // 3 arrivals at 10-min cadence
     const after = (await getCity(player)).population.total;
     expect(after - before).toBe(3);
+  });
+});
+
+describe('simple army and PvE', () => {
+  async function playerWithBarracks(name: string): Promise<TestPlayer> {
+    const player = await registerTestPlayer(ctx, name);
+    expect((await build(player, 'quarry')).statusCode).toBe(201);
+    ctx.clock.advanceMs(60 * 1000);
+    expect((await setWorkers(player, { sawmill: 4, farm: 4, quarry: 4 })).statusCode).toBe(200);
+    ctx.clock.advanceMs(2 * 60 * 60 * 1000); // grow population and stone
+    expect((await build(player, 'townHall')).statusCode).toBe(201);
+    ctx.clock.advanceMs(60 * 1000);
+    expect((await build(player, 'barracks')).statusCode).toBe(201);
+    ctx.clock.advanceMs(2 * 60 * 1000);
+    ctx.clock.advanceMs(15 * 60 * 1000); // replenish wood for the first six recruits
+    return player;
+  }
+
+  it('starts with an empty army and two visible encounters', async () => {
+    const player = await registerTestPlayer(ctx, 'peacekeeper');
+    const military = await getMilitary(player);
+    expect(military.army).toMatchObject({
+      units: { spearman: 0, archer: 0 },
+      totalUnits: 0,
+      power: 0
+    });
+    expect(military.encounters.map((encounter) => encounter.id)).toEqual([
+      'banditCamp',
+      'raiderOutpost'
+    ]);
+    expect(military.encounters[1]?.locked).toBe(true);
+  });
+
+  it('requires a barracks and free citizens for recruitment', async () => {
+    const player = await registerTestPlayer(ctx, 'unprepared');
+    const noBarracks = await recruit(player, 'spearman', 1);
+    expect(noBarracks.statusCode).toBe(409);
+    expect(JSON.parse(noBarracks.body).error.code).toBe('UNMET_PREREQUISITE');
+
+    const prepared = await playerWithBarracks('recruiter');
+    const response = await recruit(prepared, 'spearman', 6);
+    expect(response.statusCode).toBe(201);
+    const body = JSON.parse(response.body) as RecruitUnitsResponse;
+    expect(body.military.army.units.spearman).toBe(6);
+    expect(body.military.army.power).toBe(60);
+    expect(body.city.population.soldiers).toBe(6);
+    expect(body.city.population.freeCitizens).toBe(
+      body.city.population.total - 12 - body.city.population.soldiers
+    );
+
+    const tooMany = await recruit(prepared, 'archer', 100);
+    expect(tooMany.statusCode).toBe(409);
+    expect(JSON.parse(tooMany.body).error.code).toBe('INSUFFICIENT_RESOURCES');
+  });
+
+  it('reserves soldiers from worker allocation and tax income', async () => {
+    const player = await playerWithBarracks('quartermaster');
+    expect((await recruit(player, 'spearman', 6)).statusCode).toBe(201);
+    const city = await getCity(player);
+    expect(city.population.soldiers).toBe(6);
+    expect(city.resources.ratesPerHour.coins).toBe(city.population.freeCitizens * 4);
+
+    const tooManyWorkers = await setWorkers(player, { sawmill: 6, farm: 6, quarry: 6 });
+    expect(tooManyWorkers.statusCode).toBe(409);
+  });
+
+  it('resolves a victory once, applies losses and grants the reward once', async () => {
+    const player = await playerWithBarracks('campbreaker');
+    expect((await recruit(player, 'spearman', 6)).statusCode).toBe(201);
+    const before = await getCity(player);
+
+    const response = await attack(player, 'banditCamp');
+    expect(response.statusCode).toBe(201);
+    const body = JSON.parse(response.body) as AttackPveResponse;
+    expect(body.report).toMatchObject({
+      encounterId: 'banditCamp',
+      victory: true,
+      attackerPower: 60,
+      defenderPower: 60,
+      unitsLost: { spearman: 2, archer: 0 }
+    });
+    expect(body.military.army.units.spearman).toBe(4);
+    expect(body.city.population.total).toBe(before.population.total - 2);
+    expect(body.military.encounters.find((entry) => entry.id === 'banditCamp')?.completed).toBe(true);
+    expect(body.city.resources.amounts.coins).toBe(before.resources.amounts.coins + 60);
+
+    const duplicate = await attack(player, 'banditCamp');
+    expect(duplicate.statusCode).toBe(409);
+    expect(JSON.parse(duplicate.body).error.code).toBe('INVALID_STATE');
+    expect((await getCity(player)).resources.amounts.coins).toBe(body.city.resources.amounts.coins);
+  });
+
+  it('records a recoverable defeat without rewards', async () => {
+    const player = await playerWithBarracks('survivor');
+    expect((await recruit(player, 'spearman', 3)).statusCode).toBe(201);
+    const response = await attack(player, 'banditCamp');
+    expect(response.statusCode).toBe(201);
+    const body = JSON.parse(response.body) as AttackPveResponse;
+    expect(body.report.victory).toBe(false);
+    expect(body.report.reward).toEqual({});
+    expect(body.military.army.units.spearman).toBe(1);
+    expect(body.city.population.soldiers).toBe(1);
+    expect(body.military.recentReports[0]?.victory).toBe(false);
+  });
+
+  it('enforces encounter order and authentication', async () => {
+    const player = await playerWithBarracks('pathfinder');
+    expect((await recruit(player, 'archer', 1)).statusCode).toBe(201);
+    const locked = await attack(player, 'raiderOutpost');
+    expect(locked.statusCode).toBe(409);
+    expect(JSON.parse(locked.body).error.code).toBe('UNMET_PREREQUISITE');
+
+    const anonymous = await ctx.app.inject({ method: 'GET', url: '/api/military' });
+    expect(anonymous.statusCode).toBe(401);
   });
 });
 
