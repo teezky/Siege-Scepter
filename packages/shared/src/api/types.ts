@@ -32,6 +32,19 @@ export interface PlayerView {
 export interface CityBuildingView {
   buildingId: BuildingId;
   level: number;
+  /** Workers assigned to this building (always 0 for non-production buildings). */
+  workers: number;
+  /** Worker slots available at the current level (0 for non-production buildings). */
+  workerSlots: number;
+}
+
+export interface CityPopulationView {
+  total: number;
+  housingCapacity: number;
+  /** Citizens not assigned as workers; they pay taxes. */
+  freeCitizens: number;
+  /** ISO timestamp of the next citizen arrival; null while housing is full. */
+  nextArrivalAt: string | null;
 }
 
 export type ConstructionStatus = 'QUEUED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
@@ -50,6 +63,7 @@ export interface ConstructionOrderView {
 export interface CityResourcesView {
   /** Authoritative amounts at serverTime. */
   amounts: ResourceAmounts;
+  /** Net rates: worker production, minus food upkeep, plus taxes. */
   ratesPerHour: ResourceAmounts;
   storageCapacity: number;
 }
@@ -59,6 +73,7 @@ export interface CityView {
   name: string;
   buildings: CityBuildingView[];
   resources: CityResourcesView;
+  population: CityPopulationView;
   constructionQueue: ConstructionOrderView[];
   /** Server clock at response time (ISO), for client-side prediction. */
   serverTime: string;
@@ -85,4 +100,13 @@ export interface StartConstructionRequest {
 export interface StartConstructionResponse {
   city: CityView;
   order: ConstructionOrderView;
+}
+
+/** Full replacement of worker assignments for the city's production buildings. */
+export interface SetWorkersRequest {
+  allocation: Partial<Record<BuildingId, number>>;
+}
+
+export interface SetWorkersResponse {
+  city: CityView;
 }

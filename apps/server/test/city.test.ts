@@ -31,22 +31,39 @@ async function build(player: TestPlayer, buildingId: string) {
   });
 }
 
+async function setWorkers(player: TestPlayer, allocation: Record<string, number>) {
+  return ctx.app.inject({
+    method: 'PUT',
+    url: `/api/cities/${player.cityId}/workers`,
+    headers: { cookie: player.cookie },
+    payload: { allocation }
+  });
+}
+
 describe('registration and first city', () => {
-  it('creates a city with starting buildings and resources', async () => {
+  it('creates a city with starting buildings, workers and resources', async () => {
     const player = await registerTestPlayer(ctx, 'founder');
     const city = await getCity(player);
 
     expect(city.buildings).toEqual(
       expect.arrayContaining([
-        { buildingId: 'townHall', level: 1 },
-        { buildingId: 'sawmill', level: 1 },
-        { buildingId: 'farm', level: 1 }
+        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0 },
+        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
+        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6 }
       ])
     );
     expect(city.resources.amounts).toEqual(STARTING_RESOURCES);
-    expect(city.resources.ratesPerHour.wood).toBe(120);
-    expect(city.resources.ratesPerHour.food).toBe(110);
-    expect(city.resources.ratesPerHour.coins).toBe(40);
+    // 4 sawmill workers × 20/h
+    expect(city.resources.ratesPerHour.wood).toBe(80);
+    // farm 4 × 18 = 72, minus 12 citizens × 2 food upkeep
+    expect(city.resources.ratesPerHour.food).toBe(48);
+    // 4 free citizens × 4 coins tax
+    expect(city.resources.ratesPerHour.coins).toBe(16);
+
+    expect(city.population.total).toBe(12);
+    expect(city.population.housingCapacity).toBe(30); // base 10 + town hall 20
+    expect(city.population.freeCitizens).toBe(4);
+    expect(city.population.nextArrivalAt).not.toBeNull();
   });
 
   it('rejects duplicate usernames with a structured error', async () => {
@@ -60,15 +77,29 @@ describe('registration and first city', () => {
   });
 });
 
-describe('time-based resource production', () => {
-  it('accumulates resources from elapsed server time', async () => {
+describe('time-based production and population growth', () => {
+  it('accumulates resources and citizens from elapsed server time', async () => {
     const player = await registerTestPlayer(ctx, 'producer');
     ctx.clock.advanceMs(60 * 60 * 1000); // 1 hour
 
     const city = await getCity(player);
-    expect(city.resources.amounts.wood).toBe(STARTING_RESOURCES.wood + 120);
-    expect(city.resources.amounts.food).toBe(STARTING_RESOURCES.food + 110);
+    // Wood rate is constant (workers do not change on their own): 4 × 20/h.
+    expect(city.resources.amounts.wood).toBe(STARTING_RESOURCES.wood + 80);
     expect(city.resources.amounts.stone).toBe(STARTING_RESOURCES.stone); // no quarry yet
+    // One citizen arrived every 15 minutes (food and housing allowed it).
+    expect(city.population.total).toBe(16);
+    // New citizens are free: tax income grew, food surplus shrank.
+    expect(city.resources.ratesPerHour.coins).toBe(8 * 4);
+    expect(city.resources.ratesPerHour.food).toBe(72 - 16 * 2);
+  });
+
+  it('growth stops at housing capacity', async () => {
+    const player = await registerTestPlayer(ctx, 'landlord');
+    ctx.clock.advanceMs(24 * 60 * 60 * 1000);
+
+    const city = await getCity(player);
+    expect(city.population.total).toBe(city.population.housingCapacity);
+    expect(city.population.nextArrivalAt).toBeNull();
   });
 
   it('caps storage-capped resources at capacity', async () => {
@@ -77,6 +108,7 @@ describe('time-based resource production', () => {
 
     const city = await getCity(player);
     expect(city.resources.amounts.wood).toBe(city.resources.storageCapacity);
+    // Farm surplus stays positive even at full population (72 > 60).
     expect(city.resources.amounts.food).toBe(city.resources.storageCapacity);
     // Coins are not storage-capped in slice 1.
     expect(city.resources.amounts.coins).toBeGreaterThan(city.resources.storageCapacity);
@@ -106,25 +138,31 @@ describe('construction', () => {
     expect(city.buildings.find((b) => b.buildingId === 'quarry')).toBeUndefined();
     expect(city.constructionQueue).toHaveLength(1);
 
-    // Complete.
+    // Complete — but a fresh quarry has no workers, so no stone flows yet.
     ctx.clock.advanceMs(2000);
     city = await getCity(player);
-    expect(city.buildings).toContainEqual({ buildingId: 'quarry', level: 1 });
+    expect(city.buildings).toContainEqual({ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6 });
     expect(city.constructionQueue).toHaveLength(0);
-    expect(city.resources.ratesPerHour.stone).toBe(90);
+    expect(city.resources.ratesPerHour.stone).toBe(0);
   });
 
-  it('production rate changes take effect from the completion moment', async () => {
+  it('a completed building produces nothing until workers are assigned', async () => {
     const player = await registerTestPlayer(ctx, 'timekeeper');
     await build(player, 'quarry');
     const buildMs = buildingLevelSeconds(BUILDINGS.quarry, 1) * 1000;
 
-    // Advance one full hour past the completion time.
+    // Advance one full hour past the completion time: still zero stone gained.
     ctx.clock.advanceMs(buildMs + 60 * 60 * 1000);
-    const city = await getCity(player);
-    // Stone: starting - cost + exactly 1h of quarry production (90).
+    let city = await getCity(player);
     const cost = buildingLevelCost(BUILDINGS.quarry, 1);
-    expect(city.resources.amounts.stone).toBe(STARTING_RESOURCES.stone - cost.stone! + 90);
+    expect(city.resources.amounts.stone).toBe(STARTING_RESOURCES.stone - cost.stone!);
+
+    // Staff it: production starts from the allocation moment.
+    const response = await setWorkers(player, { sawmill: 4, farm: 4, quarry: 3 });
+    expect(response.statusCode).toBe(200);
+    ctx.clock.advanceMs(60 * 60 * 1000);
+    city = await getCity(player);
+    expect(city.resources.amounts.stone).toBe(STARTING_RESOURCES.stone - cost.stone! + 3 * 15);
   });
 
   it('queues up to the limit and rejects beyond it', async () => {
@@ -132,7 +170,7 @@ describe('construction', () => {
     // Sawmill and farm start at level 1, so queuing all four costs more wood
     // than the starting balance; let production run a bit first, as a real
     // player would before affording four consecutive upgrades.
-    ctx.clock.advanceMs(45 * 60 * 1000);
+    ctx.clock.advanceMs(75 * 60 * 1000);
 
     expect((await build(player, 'sawmill')).statusCode).toBe(201); // active
     expect((await build(player, 'farm')).statusCode).toBe(201); // queue 1
@@ -152,8 +190,8 @@ describe('construction', () => {
     // Sleep long enough for both to finish.
     ctx.clock.advanceMs(24 * 60 * 60 * 1000);
     const city = await getCity(player);
-    expect(city.buildings).toContainEqual({ buildingId: 'quarry', level: 1 });
-    expect(city.buildings).toContainEqual({ buildingId: 'warehouse', level: 1 });
+    expect(city.buildings).toContainEqual({ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6 });
+    expect(city.buildings).toContainEqual({ buildingId: 'warehouse', level: 1, workers: 0, workerSlots: 0 });
     expect(city.constructionQueue).toHaveLength(0);
   });
 
@@ -204,8 +242,101 @@ describe('construction', () => {
     const second = await getCity(player);
     expect(second.buildings).toEqual(first.buildings);
     expect(second.resources.amounts).toEqual(first.resources.amounts);
+    expect(second.population.total).toBe(first.population.total);
     const quarries = second.buildings.filter((b) => b.buildingId === 'quarry');
-    expect(quarries).toEqual([{ buildingId: 'quarry', level: 1 }]);
+    expect(quarries).toEqual([{ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6 }]);
+  });
+});
+
+describe('worker allocation', () => {
+  it('rejects more workers than the building has slots', async () => {
+    const player = await registerTestPlayer(ctx, 'overstaffer');
+    const response = await setWorkers(player, { sawmill: 7 }); // level 1 → 6 slots
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error.code).toBe('VALIDATION_FAILED');
+  });
+
+  it('rejects allocating to an unbuilt building', async () => {
+    const player = await registerTestPlayer(ctx, 'planner');
+    const response = await setWorkers(player, { quarry: 1 });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error.code).toBe('INVALID_STATE');
+  });
+
+  it('rejects allocating to a building that employs no workers', async () => {
+    const player = await registerTestPlayer(ctx, 'bureaucrat');
+    const response = await setWorkers(player, { townHall: 1 });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error.code).toBe('VALIDATION_FAILED');
+  });
+
+  it('rejects a total above the population', async () => {
+    const player = await registerTestPlayer(ctx, 'slavedriver');
+    // Exactly the whole population working is allowed…
+    const allWorking = await setWorkers(player, { sawmill: 6, farm: 6 });
+    expect(allWorking.statusCode).toBe(200);
+
+    // …but more slots than citizens is not. Upgrade the sawmill to get
+    // 12 slots while the population is still 12.
+    await build(player, 'sawmill');
+    ctx.clock.advanceMs(60 * 1000); // level 2 finishes in ~38s; well before the next arrival
+    const tooMany = await setWorkers(player, { sawmill: 12, farm: 6 });
+    expect(tooMany.statusCode).toBe(409);
+    expect(JSON.parse(tooMany.body).error.code).toBe('INSUFFICIENT_RESOURCES');
+  });
+
+  it('re-allocation changes rates and free citizens immediately', async () => {
+    const player = await registerTestPlayer(ctx, 'micromanager');
+    const response = await setWorkers(player, { sawmill: 6, farm: 2 });
+    expect(response.statusCode).toBe(200);
+    const { city } = JSON.parse(response.body) as { city: CityView };
+
+    expect(city.resources.ratesPerHour.wood).toBe(120); // 6 × 20
+    expect(city.resources.ratesPerHour.food).toBe(2 * 18 - 12 * 2); // 12/h
+    expect(city.population.freeCitizens).toBe(4);
+    expect(city.resources.ratesPerHour.coins).toBe(16);
+  });
+
+  it('rejects another player’s allocation', async () => {
+    const owner = await registerTestPlayer(ctx, 'workowner');
+    const intruder = await registerTestPlayer(ctx, 'workthief');
+    const response = await ctx.app.inject({
+      method: 'PUT',
+      url: `/api/cities/${owner.cityId}/workers`,
+      headers: { cookie: intruder.cookie },
+      payload: { allocation: { sawmill: 1 } }
+    });
+    expect(response.statusCode).toBe(403);
+  });
+});
+
+describe('famine', () => {
+  it('empty pantry pauses growth, nobody dies, recovery works', async () => {
+    const player = await registerTestPlayer(ctx, 'starver');
+    // Let the city grow to its housing cap first (30 citizens after ~4.5h).
+    ctx.clock.advanceMs(6 * 60 * 60 * 1000);
+
+    // Then nobody farms: food drains at 2/citizen/h, 60/h.
+    expect((await setWorkers(player, { sawmill: 4, farm: 0 })).statusCode).toBe(200);
+    ctx.clock.advanceMs(24 * 60 * 60 * 1000);
+    let city = await getCity(player);
+    expect(city.resources.amounts.food).toBe(0);
+    expect(city.population.total).toBe(30); // nobody died
+
+    // New housing during a famine attracts nobody.
+    expect((await build(player, 'house')).statusCode).toBe(201);
+    ctx.clock.advanceMs(3 * 60 * 60 * 1000);
+    city = await getCity(player);
+    expect(city.population.housingCapacity).toBe(44); // house built: 30 + 14
+    expect(city.population.total).toBe(30); // growth still paused
+
+    // Put everyone on the fields: the surplus refills the pantry and
+    // arrivals resume.
+    expect((await setWorkers(player, { farm: 6 })).statusCode).toBe(200);
+    ctx.clock.advanceMs(2 * 60 * 60 * 1000);
+    city = await getCity(player);
+    expect(city.resources.amounts.food).toBeGreaterThan(0);
+    expect(city.population.total).toBeGreaterThan(30); // growth resumed
   });
 });
 

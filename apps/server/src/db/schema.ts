@@ -49,6 +49,10 @@ export const cities = pgTable(
       .notNull()
       .references(() => players.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
+    /** Citizens at refTime of the city's resource rows. */
+    population: integer('population').notNull().default(0),
+    /** Next citizen arrival; null while housing is full. */
+    nextArrivalAt: timestamp('next_arrival_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index('cities_player_idx').on(table.playerId)]
@@ -61,10 +65,8 @@ export const cityResources = pgTable(
       .notNull()
       .references(() => cities.id, { onDelete: 'cascade' }),
     resource: text('resource').notNull(),
-    /** Integer amount at refTime. */
+    /** Integer amount at refTime. All of a city's rows share one refTime. */
     amountAtRef: bigint('amount_at_ref', { mode: 'number' }).notNull(),
-    /** Integer production per hour at refTime. */
-    ratePerHour: integer('rate_per_hour').notNull(),
     refTime: timestamp('ref_time', { withTimezone: true }).notNull()
   },
   (table) => [primaryKey({ columns: [table.cityId, table.resource] })]
@@ -77,7 +79,9 @@ export const cityBuildings = pgTable(
       .notNull()
       .references(() => cities.id, { onDelete: 'cascade' }),
     buildingId: text('building_id').notNull(),
-    level: integer('level').notNull()
+    level: integer('level').notNull(),
+    /** Workers assigned to this building (0 for non-production buildings). */
+    workers: integer('workers').notNull().default(0)
   },
   (table) => [primaryKey({ columns: [table.cityId, table.buildingId] })]
 );

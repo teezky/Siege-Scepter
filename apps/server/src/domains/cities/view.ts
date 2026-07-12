@@ -1,8 +1,10 @@
 import {
-  STORAGE_CAPPED_RESOURCES,
-  cityProductionPerHour,
+  BUILDINGS,
+  advanceCity,
+  assignedWorkers,
+  buildingWorkerSlots,
+  cityHousingCapacity,
   cityStorageCapacity,
-  currentAmount,
   emptyResourceAmounts,
   type CityView
 } from '@siege/shared';
@@ -10,27 +12,41 @@ import type { CityState } from './service.js';
 
 /** Maps internal city state to the public API contract. */
 export function toCityView(state: CityState, now: Date): CityView {
-  const capacity = cityStorageCapacity(state.buildings);
-  const rates = cityProductionPerHour(state.buildings);
-  const amounts = emptyResourceAmounts();
-  for (const row of state.resourceRows) {
-    const capped = STORAGE_CAPPED_RESOURCES.includes(row.resource);
-    amounts[row.resource] = currentAmount(
-      { amountAtRef: row.amountAtRef, ratePerHour: row.ratePerHour },
-      row.refTime.getTime(),
-      now.getTime(),
-      capped ? capacity : null
-    );
-  }
+  // Advance in memory (never persisted here — GET stays cheap); the same
+  // shared function runs client-side, so both always agree.
+  const sim = advanceCity(
+    {
+      amounts: state.resourceRows.reduce((acc, row) => {
+        acc[row.resource] = row.amountAtRef;
+        return acc;
+      }, emptyResourceAmounts()),
+      population: state.population,
+      nextArrivalAtMs: state.nextArrivalAt ? state.nextArrivalAt.getTime() : null,
+      refTimeMs: state.resourceRows.reduce((max, row) => Math.max(max, row.refTime.getTime()), 0),
+    },
+    state.buildings,
+    now.getTime()
+  );
 
   return {
     id: state.id,
     name: state.name,
-    buildings: state.buildings.map(({ buildingId, level }) => ({ buildingId, level })),
+    buildings: state.buildings.map(({ buildingId, level, workers }) => ({
+      buildingId,
+      level,
+      workers,
+      workerSlots: buildingWorkerSlots(BUILDINGS[buildingId], level)
+    })),
     resources: {
-      amounts,
-      ratesPerHour: rates,
-      storageCapacity: capacity
+      amounts: sim.amounts,
+      ratesPerHour: sim.ratesPerHour,
+      storageCapacity: cityStorageCapacity(state.buildings)
+    },
+    population: {
+      total: sim.population,
+      housingCapacity: cityHousingCapacity(state.buildings),
+      freeCitizens: Math.max(0, sim.population - assignedWorkers(state.buildings)),
+      nextArrivalAt: sim.nextArrivalAtMs === null ? null : new Date(sim.nextArrivalAtMs).toISOString()
     },
     constructionQueue: state.orders
       .filter((o) => o.status === 'QUEUED' || o.status === 'IN_PROGRESS')

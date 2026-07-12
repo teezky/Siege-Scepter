@@ -1,20 +1,24 @@
 import {
   BUILDINGS,
   MAX_CONSTRUCTION_QUEUE_LENGTH,
+  POPULATION,
   RESOURCE_IDS,
   STARTING_BUILDINGS,
   STARTING_RESOURCES,
-  STORAGE_CAPPED_RESOURCES,
+  STARTING_WORKER_ALLOCATION,
+  advanceCity,
+  assignedWorkers,
   buildingLevelCost,
   buildingLevelSeconds,
+  buildingWorkerSlots,
   canAfford,
   checkBuildingPrerequisites,
-  cityProductionPerHour,
-  cityStorageCapacity,
-  currentAmount,
+  cityHousingCapacity,
   emptyResourceAmounts,
   subtractCost,
   type BuildingId,
+  type CityBuildingState,
+  type CitySimState,
   type ResourceAmounts,
   type ResourceId
 } from '@siege/shared';
@@ -28,6 +32,8 @@ import { AppError } from '../../lib/errors.js';
 export type Tx = Parameters<Parameters<Database['transaction']>[0]>[0];
 type DbOrTx = Database | Tx;
 
+const ARRIVAL_INTERVAL_MS = POPULATION.arrivalIntervalMinutes * 60_000;
+
 function isBuildingId(value: string): value is BuildingId {
   return value in BUILDINGS;
 }
@@ -36,22 +42,33 @@ function isResourceId(value: string): value is ResourceId {
   return (RESOURCE_IDS as readonly string[]).includes(value);
 }
 
-/** Creates the player's first city with starting buildings and resources. */
+/** Creates the player's first city with starting buildings, workers and resources. */
 export async function foundFirstCity(tx: Tx, playerId: string, name: string, now: Date): Promise<string> {
-  const [city] = await tx.insert(cities).values({ playerId, name }).returning({ id: cities.id });
+  const [city] = await tx
+    .insert(cities)
+    .values({
+      playerId,
+      name,
+      population: POPULATION.startingPopulation,
+      nextArrivalAt: new Date(now.getTime() + ARRIVAL_INTERVAL_MS)
+    })
+    .returning({ id: cities.id });
   if (!city) throw new AppError('INTERNAL', 'Failed to create city');
 
   await tx.insert(cityBuildings).values(
-    STARTING_BUILDINGS.map(({ buildingId, level }) => ({ cityId: city.id, buildingId, level }))
+    STARTING_BUILDINGS.map(({ buildingId, level }) => ({
+      cityId: city.id,
+      buildingId,
+      level,
+      workers: STARTING_WORKER_ALLOCATION[buildingId] ?? 0
+    }))
   );
 
-  const rates = cityProductionPerHour([...STARTING_BUILDINGS]);
   await tx.insert(cityResources).values(
     RESOURCE_IDS.map((resource) => ({
       cityId: city.id,
       resource,
       amountAtRef: STARTING_RESOURCES[resource],
-      ratePerHour: rates[resource],
       refTime: now
     }))
   );
@@ -63,12 +80,20 @@ interface LoadedCity {
   id: string;
   name: string;
   playerId: string;
+  population: number;
+  nextArrivalAt: Date | null;
 }
 
 /** Loads and row-locks the city, verifying ownership. */
 async function lockCity(tx: Tx, cityId: string, playerId: string): Promise<LoadedCity> {
   const [city] = await tx
-    .select({ id: cities.id, name: cities.name, playerId: cities.playerId })
+    .select({
+      id: cities.id,
+      name: cities.name,
+      playerId: cities.playerId,
+      population: cities.population,
+      nextArrivalAt: cities.nextArrivalAt
+    })
     .from(cities)
     .where(eq(cities.id, cityId))
     .for('update');
@@ -77,22 +102,21 @@ async function lockCity(tx: Tx, cityId: string, playerId: string): Promise<Loade
   return city;
 }
 
-async function loadBuildingLevels(tx: DbOrTx, cityId: string): Promise<Map<BuildingId, number>> {
+async function loadBuildings(tx: DbOrTx, cityId: string): Promise<CityBuildingState[]> {
   const rows = await tx
-    .select({ buildingId: cityBuildings.buildingId, level: cityBuildings.level })
+    .select({
+      buildingId: cityBuildings.buildingId,
+      level: cityBuildings.level,
+      workers: cityBuildings.workers
+    })
     .from(cityBuildings)
     .where(eq(cityBuildings.cityId, cityId));
-  const levels = new Map<BuildingId, number>();
-  for (const row of rows) {
-    if (isBuildingId(row.buildingId)) levels.set(row.buildingId, row.level);
-  }
-  return levels;
+  return rows.filter((row): row is CityBuildingState => isBuildingId(row.buildingId));
 }
 
 interface ResourceRow {
   resource: ResourceId;
   amountAtRef: number;
-  ratePerHour: number;
   refTime: Date;
 }
 
@@ -101,7 +125,6 @@ async function loadResourceRows(tx: DbOrTx, cityId: string): Promise<ResourceRow
     .select({
       resource: cityResources.resource,
       amountAtRef: cityResources.amountAtRef,
-      ratePerHour: cityResources.ratePerHour,
       refTime: cityResources.refTime
     })
     .from(cityResources)
@@ -109,42 +132,65 @@ async function loadResourceRows(tx: DbOrTx, cityId: string): Promise<ResourceRow
   return rows.filter((row): row is ResourceRow => isResourceId(row.resource));
 }
 
-function computeAmountsAt(rows: ResourceRow[], atMs: number, capacity: number): ResourceAmounts {
+/** Sim state at the rows' shared reference time (settles always write one refTime). */
+function toSimState(city: LoadedCity, rows: ResourceRow[]): CitySimState {
   const amounts = emptyResourceAmounts();
+  let refTimeMs = 0;
   for (const row of rows) {
-    const capped = STORAGE_CAPPED_RESOURCES.includes(row.resource);
-    amounts[row.resource] = currentAmount(
-      { amountAtRef: row.amountAtRef, ratePerHour: row.ratePerHour },
-      row.refTime.getTime(),
-      atMs,
-      capped ? capacity : null
-    );
+    amounts[row.resource] = row.amountAtRef;
+    refTimeMs = Math.max(refTimeMs, row.refTime.getTime());
   }
-  return amounts;
+  return {
+    amounts,
+    population: city.population,
+    nextArrivalAtMs: city.nextArrivalAt ? city.nextArrivalAt.getTime() : null,
+    refTimeMs
+  };
 }
 
 /**
- * Settles every resource row at time `at`: persists the computed amounts,
- * applies `newRates`, and moves the reference timestamp forward.
+ * Settles the city at time `at`: advances population and resources with the
+ * shared simulation, optionally subtracts a cost, and persists everything
+ * with `at` as the new reference time. Returns the settled amounts.
+ * Throws INSUFFICIENT_RESOURCES if `adjust` cannot be paid.
  */
-async function settleResources(
+async function settleCity(
   tx: Tx,
-  cityId: string,
+  city: LoadedCity,
+  buildings: CityBuildingState[],
   at: Date,
-  newRates: ResourceAmounts,
-  capacityAtSettle: number,
   adjust?: Partial<Record<ResourceId, number>>
 ): Promise<ResourceAmounts> {
-  const rows = await loadResourceRows(tx, cityId);
-  const settled = computeAmountsAt(rows, at.getTime(), capacityAtSettle);
-  const adjusted = adjust ? subtractCost(settled, adjust) : settled;
+  const rows = await loadResourceRows(tx, city.id);
+  const result = advanceCity(toSimState(city, rows), buildings, at.getTime());
+
+  if (adjust && !canAfford(result.amounts, adjust)) {
+    throw new AppError('INSUFFICIENT_RESOURCES', 'Not enough resources', {
+      cost: adjust,
+      amounts: result.amounts
+    });
+  }
+  const amounts = adjust ? subtractCost(result.amounts, adjust) : result.amounts;
+
   for (const resource of RESOURCE_IDS) {
     await tx
       .update(cityResources)
-      .set({ amountAtRef: adjusted[resource], ratePerHour: newRates[resource], refTime: at })
-      .where(and(eq(cityResources.cityId, cityId), eq(cityResources.resource, resource)));
+      .set({ amountAtRef: amounts[resource], refTime: at })
+      .where(and(eq(cityResources.cityId, city.id), eq(cityResources.resource, resource)));
   }
-  return adjusted;
+  await tx
+    .update(cities)
+    .set({
+      population: result.population,
+      nextArrivalAt: result.nextArrivalAtMs === null ? null : new Date(result.nextArrivalAtMs)
+    })
+    .where(eq(cities.id, city.id));
+
+  // Keep the in-memory city consistent for subsequent settles in the same tx.
+  city.population = result.population;
+  city.nextArrivalAt = result.nextArrivalAtMs === null ? null : new Date(result.nextArrivalAtMs);
+
+  return amounts;
 }
 
 /**
@@ -154,34 +200,38 @@ async function settleResources(
  * Correctness does not depend on any background job (project instructions
  * sections 9–10, 24).
  */
-export async function finalizeDueConstructions(tx: Tx, cityId: string, now: Date): Promise<boolean> {
+export async function finalizeDueConstructions(tx: Tx, city: LoadedCity, now: Date): Promise<boolean> {
   let changed = false;
   // Bounded loop: each iteration completes one order; the queue is small.
   for (;;) {
     const [due] = await tx
       .select()
       .from(constructionOrders)
-      .where(and(eq(constructionOrders.cityId, cityId), eq(constructionOrders.status, 'IN_PROGRESS')))
+      .where(and(eq(constructionOrders.cityId, city.id), eq(constructionOrders.status, 'IN_PROGRESS')))
       .orderBy(asc(constructionOrders.completesAt))
       .limit(1);
 
     if (!due || !due.completesAt || due.completesAt.getTime() > now.getTime()) break;
 
     const completedAt = due.completesAt;
-    const levelsBefore = await loadBuildingLevels(tx, cityId);
-    const capacityBefore = cityStorageCapacity(
-      [...levelsBefore.entries()].map(([buildingId, level]) => ({ buildingId, level }))
-    );
+
+    // Settle with the OLD building levels up to the completion moment —
+    // rates and capacity derive from buildings, so order matters.
+    const buildingsBefore = await loadBuildings(tx, city.id);
+    await settleCity(tx, city, buildingsBefore, completedAt);
 
     // Apply the building level.
     if (isBuildingId(due.buildingId)) {
-      if (levelsBefore.has(due.buildingId)) {
+      const existing = buildingsBefore.find((b) => b.buildingId === due.buildingId);
+      if (existing) {
         await tx
           .update(cityBuildings)
           .set({ level: due.targetLevel })
-          .where(and(eq(cityBuildings.cityId, cityId), eq(cityBuildings.buildingId, due.buildingId)));
+          .where(and(eq(cityBuildings.cityId, city.id), eq(cityBuildings.buildingId, due.buildingId)));
       } else {
-        await tx.insert(cityBuildings).values({ cityId, buildingId: due.buildingId, level: due.targetLevel });
+        await tx
+          .insert(cityBuildings)
+          .values({ cityId: city.id, buildingId: due.buildingId, level: due.targetLevel, workers: 0 });
       }
     }
     await tx
@@ -189,18 +239,18 @@ export async function finalizeDueConstructions(tx: Tx, cityId: string, now: Date
       .set({ status: 'COMPLETED' })
       .where(eq(constructionOrders.id, due.id));
 
-    // Settle production at the completion moment with the OLD capacity,
-    // then switch to the new rates going forward.
-    const levelsAfter = await loadBuildingLevels(tx, cityId);
-    const buildingsAfter = [...levelsAfter.entries()].map(([buildingId, level]) => ({ buildingId, level }));
-    const newRates = cityProductionPerHour(buildingsAfter);
-    await settleResources(tx, cityId, completedAt, newRates, capacityBefore);
+    // A housing upgrade may re-open growth: schedule the next arrival.
+    const buildingsAfter = await loadBuildings(tx, city.id);
+    if (city.nextArrivalAt === null && city.population < cityHousingCapacity(buildingsAfter)) {
+      city.nextArrivalAt = new Date(completedAt.getTime() + ARRIVAL_INTERVAL_MS);
+      await tx.update(cities).set({ nextArrivalAt: city.nextArrivalAt }).where(eq(cities.id, city.id));
+    }
 
     // Promote the next queued order; it starts when the previous one finished.
     const [next] = await tx
       .select()
       .from(constructionOrders)
-      .where(and(eq(constructionOrders.cityId, cityId), eq(constructionOrders.status, 'QUEUED')))
+      .where(and(eq(constructionOrders.cityId, city.id), eq(constructionOrders.status, 'QUEUED')))
       .orderBy(asc(constructionOrders.queuePosition))
       .limit(1);
     if (next && isBuildingId(next.buildingId)) {
@@ -222,7 +272,9 @@ export async function finalizeDueConstructions(tx: Tx, cityId: string, now: Date
 export interface CityState {
   id: string;
   name: string;
-  buildings: { buildingId: BuildingId; level: number }[];
+  population: number;
+  nextArrivalAt: Date | null;
+  buildings: CityBuildingState[];
   resourceRows: ResourceRow[];
   orders: {
     id: string;
@@ -236,7 +288,7 @@ export interface CityState {
 }
 
 async function loadCityState(tx: DbOrTx, city: LoadedCity): Promise<CityState> {
-  const levels = await loadBuildingLevels(tx, city.id);
+  const buildings = await loadBuildings(tx, city.id);
   const resourceRows = await loadResourceRows(tx, city.id);
   const orderRows = await tx
     .select()
@@ -252,7 +304,9 @@ async function loadCityState(tx: DbOrTx, city: LoadedCity): Promise<CityState> {
   return {
     id: city.id,
     name: city.name,
-    buildings: [...levels.entries()].map(([buildingId, level]) => ({ buildingId, level })),
+    population: city.population,
+    nextArrivalAt: city.nextArrivalAt,
+    buildings,
     resourceRows,
     orders: orderRows
       .filter((row) => isBuildingId(row.buildingId))
@@ -278,7 +332,7 @@ export async function getPlayerCityState(db: Database, playerId: string, clock: 
       .limit(1);
     if (!cityRow) throw new AppError('NOT_FOUND', 'Player has no city');
     const city = await lockCity(tx, cityRow.id, playerId);
-    await finalizeDueConstructions(tx, city.id, clock.now());
+    await finalizeDueConstructions(tx, city, clock.now());
     return loadCityState(tx, city);
   });
 }
@@ -300,9 +354,10 @@ export async function startConstruction(
   return db.transaction(async (tx) => {
     const now = clock.now();
     const city = await lockCity(tx, cityId, playerId);
-    await finalizeDueConstructions(tx, city.id, now);
+    await finalizeDueConstructions(tx, city, now);
 
-    const levels = await loadBuildingLevels(tx, city.id);
+    const buildings = await loadBuildings(tx, city.id);
+    const levels = new Map(buildings.map((b) => [b.buildingId, b.level]));
     const activeOrders = await tx
       .select()
       .from(constructionOrders)
@@ -346,19 +401,9 @@ export async function startConstruction(
       );
     }
 
+    // Pay: settle at `now` and subtract the cost (throws if unaffordable).
     const cost = buildingLevelCost(def, targetLevel);
-    const buildingsNow = [...levels.entries()].map(([id, level]) => ({ buildingId: id, level }));
-    const capacity = cityStorageCapacity(buildingsNow);
-    const rates = cityProductionPerHour(buildingsNow);
-    const resourceRows = await loadResourceRows(tx, city.id);
-    const amountsNow = computeAmountsAt(resourceRows, now.getTime(), capacity);
-
-    if (!canAfford(amountsNow, cost)) {
-      throw new AppError('INSUFFICIENT_RESOURCES', 'Not enough resources', { cost, amounts: amountsNow });
-    }
-
-    // Pay: settle at `now`, subtract the cost, keep current rates.
-    await settleResources(tx, city.id, now, rates, capacity, cost);
+    await settleCity(tx, city, buildings, now, cost);
 
     const hasInProgress = activeOrders.some((o) => o.status === 'IN_PROGRESS');
     const maxPosition = activeOrders.reduce((max, o) => Math.max(max, o.queuePosition), 0);
@@ -380,5 +425,71 @@ export async function startConstruction(
 
     const state = await loadCityState(tx, city);
     return { state, orderId: order.id };
+  });
+}
+
+/**
+ * Replaces the worker allocation of the city's production buildings.
+ * Buildings absent from `allocation` get zero workers. Validates slots
+ * (building level) and the total against the settled population.
+ */
+export async function setWorkerAllocation(
+  db: Database,
+  playerId: string,
+  cityId: string,
+  allocation: Partial<Record<BuildingId, number>>,
+  clock: Clock
+): Promise<CityState> {
+  return db.transaction(async (tx) => {
+    const now = clock.now();
+    const city = await lockCity(tx, cityId, playerId);
+    await finalizeDueConstructions(tx, city, now);
+
+    const buildings = await loadBuildings(tx, city.id);
+
+    // Every allocation key must be a production building the city has built.
+    const byId = new Map(buildings.map((b) => [b.buildingId, b]));
+    for (const [buildingId, workers] of Object.entries(allocation) as [BuildingId, number][]) {
+      const def = BUILDINGS[buildingId];
+      if (!def.production) {
+        throw new AppError('VALIDATION_FAILED', `${buildingId} does not employ workers`, { buildingId });
+      }
+      const built = byId.get(buildingId);
+      if (!built || built.level <= 0) {
+        throw new AppError('INVALID_STATE', `${buildingId} is not built in this city`, { buildingId });
+      }
+      const slots = buildingWorkerSlots(def, built.level);
+      if (!Number.isInteger(workers) || workers < 0 || workers > slots) {
+        throw new AppError('VALIDATION_FAILED', `${buildingId} accepts 0–${slots} workers`, {
+          buildingId,
+          slots
+        });
+      }
+    }
+
+    // Settle BEFORE the change: the old allocation earned its keep until now,
+    // and the settled population is what the new total is validated against.
+    await settleCity(tx, city, buildings, now);
+
+    const next = buildings.map((b) => ({
+      ...b,
+      workers: BUILDINGS[b.buildingId].production ? (allocation[b.buildingId] ?? 0) : 0
+    }));
+    const total = assignedWorkers(next);
+    if (total > city.population) {
+      throw new AppError('INSUFFICIENT_RESOURCES', 'Not enough citizens for this allocation', {
+        population: city.population,
+        requested: total
+      });
+    }
+
+    for (const building of next) {
+      await tx
+        .update(cityBuildings)
+        .set({ workers: building.workers })
+        .where(and(eq(cityBuildings.cityId, city.id), eq(cityBuildings.buildingId, building.buildingId)));
+    }
+
+    return loadCityState(tx, city);
   });
 }

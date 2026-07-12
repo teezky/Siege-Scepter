@@ -1,6 +1,6 @@
 # Siege & Scepter — Project Status
 
-Updated: 2026-07-11 (session 2 — verified, tested, CI green)
+Updated: 2026-07-12 (session 3 — population slice shipped)
 
 ## Decisions made (approved by Tanel)
 
@@ -13,22 +13,43 @@ Updated: 2026-07-11 (session 2 — verified, tested, CI green)
 
 ## What exists (committed and pushed, branch `main`)
 
-- `packages/shared` — typed game config (5 resources, 6 buildings: townHall, warehouse,
-  sawmill, quarry, farm, ironMine), pure domain math (exponential costs/times, time-based
-  resource calculation with storage caps), API contract types. 20 unit tests, all green.
+- `packages/shared` — typed game config (5 resources; 7 buildings: townHall, warehouse,
+  house, sawmill, quarry, farm, ironMine; population constants), pure domain math
+  (exponential costs/times, worker-based production, event-driven population+resource
+  simulation `advanceCity` shared by server and client), API contract types. 34 unit
+  tests, all green.
 - `apps/server` — Fastify app: auth domain (argon2 + hashed session tokens + cookie,
   rate-limited), cities domain (first city on registration, lazy idempotent construction
-  finalization inside row-locked transactions, chronological offline queue processing),
-  structured error contract. 14 integration tests against real Postgres, all green.
+  finalization inside row-locked transactions, chronological offline queue processing,
+  `PUT /api/cities/:id/workers` worker allocation with slot/population validation),
+  structured error contract. 22 integration tests against real Postgres, all green.
 - `apps/web` — React SPA: auth form, city screen with live-predicted resource bar
-  (client predicts via shared domain functions, server stays authoritative),
-  building cards with cost/prereq gating, construction queue with countdowns. Dark
-  medieval-ish CSS, mobile-friendly. 10 component tests (Vitest + Testing Library,
-  jsdom): button labels incl. the queued-order regression, prereq gating,
-  queue-full state, resource bar, queue rendering, AuthForm mode toggle.
-- Drizzle migration `0000_sticky_prodigy.sql` generated, reviewed, applied to `siege_dev`.
+  AND population (client runs the same `advanceCity` simulation, server stays
+  authoritative), population panel (housing, free citizens/taxes, next-arrival
+  countdown, famine warnings), worker +/− allocation controls on production
+  buildings, building cards with cost/prereq gating, construction queue with
+  countdowns. Dark medieval-ish CSS, mobile-friendly. 15 component tests.
+- Drizzle migrations `0000_sticky_prodigy.sql` + `0001_cold_unus.sql` (population
+  columns, workers, drops stored rate_per_hour — rates are derived now), applied
+  to `siege_dev`.
 - `.github/workflows/ci.yml` — GitHub Actions: pnpm install → typecheck → lint →
   full test suite against a Postgres 17 service container. Green on `main`.
+
+## Population system (slice 2, shipped this session)
+
+- Growth is event-based: one citizen arrives every 15 min while there is free
+  housing AND food in storage. Between events all rates are constant, so the
+  original "amount at ref time + rate" model still holds piecewise.
+- Production now comes from workers: production buildings have 6 slots/level,
+  output = workers × per-worker rate (sawmill 20 wood, quarry 15 stone,
+  farm 18 food, ironMine 10 iron per worker/h).
+- Every citizen eats 2 food/h; unassigned (free) citizens pay 4 coins/h tax
+  (replaces the old town-hall coin placeholder).
+- Housing: base 10 + town hall 20/level + house 14/level (new `house` building).
+- Famine: food clamps at 0, arrivals pause and retry every 15 min, nobody dies
+  (design doc 11.2). No production penalty yet — documented assumption.
+- `advanceCity` in `packages/shared/src/domain/population.ts` is the single
+  simulation used by server settles, server views AND client prediction.
 
 ## Verified this session (2026-07-11, Tanel's Windows machine)
 
@@ -58,9 +79,11 @@ Updated: 2026-07-11 (session 2 — verified, tested, CI green)
 
 ## Documented assumptions (revisit later)
 
-- Town hall produces a small coin income (taxes placeholder) until the population system arrives.
-- Coins are not storage-capped in slice 1.
-- Population system deferred to the next slice; production comes directly from building levels.
+- Coins are not storage-capped (since slice 1).
+- Famine pauses growth but carries no production/satisfaction penalty yet.
+- Only one `house` building per city (city_buildings PK is city+building);
+  multiple house plots arrive with the visual city map.
+- Satisfaction (design doc 11.3) not modeled yet.
 
 ## Local dev environment (Tanel's Windows machine)
 
@@ -81,8 +104,7 @@ Updated: 2026-07-11 (session 2 — verified, tested, CI green)
 
 ## Next steps
 
-1. Next slice: population system (design doc progression step 3 — deferred earlier;
-   production should come from allocated workers, not directly from building levels).
-   Alternatives considered: current-slice polish (queue cancellation etc.) or a
-   public deploy.
-2. Keep "How to Work in This Project.md" section 42 in sync (updated this session).
+1. Next slice candidates (design doc progression, section 6): research (simple
+   research tree, knowledge resource) or current-slice polish (queue cancellation,
+   satisfaction) or a public deploy so friends can test.
+2. Keep "How to Work in This Project.md" section 42 in sync.

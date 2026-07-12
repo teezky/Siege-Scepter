@@ -13,6 +13,7 @@ import type { ResourceId } from './resources.js';
 export const BUILDING_IDS = [
   'townHall',
   'warehouse',
+  'house',
   'sawmill',
   'quarry',
   'farm',
@@ -21,7 +22,7 @@ export const BUILDING_IDS = [
 
 export type BuildingId = (typeof BUILDING_IDS)[number];
 
-export type BuildingCategory = 'core' | 'storage' | 'production';
+export type BuildingCategory = 'core' | 'storage' | 'housing' | 'production';
 
 export interface BuildingPrerequisite {
   buildingId: BuildingId;
@@ -38,18 +39,27 @@ export interface BuildingDefinition {
   /** Build time of level 1 in seconds. Scales by buildTimeGrowthFactor^(level-1). */
   baseBuildSeconds: number;
   buildTimeGrowthFactor: number;
-  /** Resource production, if this is a production building. */
+  /**
+   * Resource production, if this is a production building.
+   * Since the population slice, output comes from assigned workers:
+   * production/hour = assigned workers × perWorkerPerHour. Levels add
+   * worker slots instead of raw output.
+   */
   production?: {
     resource: ResourceId;
-    /** Production per hour at level 1. */
-    basePerHour: number;
-    /** Multiplier applied per level above 1. */
-    growthFactor: number;
+    /** Output per assigned worker per hour. */
+    perWorkerPerHour: number;
+    /** Worker slots added by each building level. */
+    workerSlotsPerLevel: number;
   };
   /** Storage capacity contribution, if this is a storage building. */
   storage?: {
     baseCapacity: number;
     growthFactor: number;
+  };
+  /** Housing contribution: `perLevel × level` citizens can live here. */
+  housing?: {
+    perLevel: number;
   };
   prerequisites: BuildingPrerequisite[];
 }
@@ -63,9 +73,9 @@ export const BUILDINGS: Record<BuildingId, BuildingDefinition> = {
     costGrowthFactor: 1.5,
     baseBuildSeconds: 30,
     buildTimeGrowthFactor: 1.55,
-    // Documented assumption for slice 1: the town hall produces a small coin
-    // income representing taxes, until the population system arrives.
-    production: { resource: 'coins', basePerHour: 40, growthFactor: 1.25 },
+    // Taxes now come from free citizens (population system); the town hall
+    // contributes administrative housing instead of the old coin placeholder.
+    housing: { perLevel: 20 },
     prerequisites: []
   },
   warehouse: {
@@ -79,6 +89,17 @@ export const BUILDINGS: Record<BuildingId, BuildingDefinition> = {
     storage: { baseCapacity: 1500, growthFactor: 1.35 },
     prerequisites: []
   },
+  house: {
+    id: 'house',
+    category: 'housing',
+    maxLevel: 20,
+    baseCost: { wood: 50, stone: 25 },
+    costGrowthFactor: 1.4,
+    baseBuildSeconds: 20,
+    buildTimeGrowthFactor: 1.45,
+    housing: { perLevel: 14 },
+    prerequisites: []
+  },
   sawmill: {
     id: 'sawmill',
     category: 'production',
@@ -87,7 +108,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDefinition> = {
     costGrowthFactor: 1.45,
     baseBuildSeconds: 25,
     buildTimeGrowthFactor: 1.5,
-    production: { resource: 'wood', basePerHour: 120, growthFactor: 1.22 },
+    production: { resource: 'wood', perWorkerPerHour: 20, workerSlotsPerLevel: 6 },
     prerequisites: []
   },
   quarry: {
@@ -98,7 +119,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDefinition> = {
     costGrowthFactor: 1.45,
     baseBuildSeconds: 25,
     buildTimeGrowthFactor: 1.5,
-    production: { resource: 'stone', basePerHour: 90, growthFactor: 1.22 },
+    production: { resource: 'stone', perWorkerPerHour: 15, workerSlotsPerLevel: 6 },
     prerequisites: []
   },
   farm: {
@@ -109,7 +130,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDefinition> = {
     costGrowthFactor: 1.45,
     baseBuildSeconds: 25,
     buildTimeGrowthFactor: 1.5,
-    production: { resource: 'food', basePerHour: 110, growthFactor: 1.22 },
+    production: { resource: 'food', perWorkerPerHour: 18, workerSlotsPerLevel: 6 },
     prerequisites: []
   },
   ironMine: {
@@ -120,7 +141,7 @@ export const BUILDINGS: Record<BuildingId, BuildingDefinition> = {
     costGrowthFactor: 1.5,
     baseBuildSeconds: 60,
     buildTimeGrowthFactor: 1.5,
-    production: { resource: 'iron', basePerHour: 60, growthFactor: 1.22 },
+    production: { resource: 'iron', perWorkerPerHour: 10, workerSlotsPerLevel: 6 },
     prerequisites: [{ buildingId: 'townHall', level: 3 }]
   }
 };
@@ -131,6 +152,15 @@ export const STARTING_BUILDINGS: ReadonlyArray<{ buildingId: BuildingId; level: 
   { buildingId: 'sawmill', level: 1 },
   { buildingId: 'farm', level: 1 }
 ];
+
+/**
+ * Workers a new city starts with already assigned, so production is visible
+ * from minute one. The remaining citizens are free (they pay taxes).
+ */
+export const STARTING_WORKER_ALLOCATION: Readonly<Partial<Record<BuildingId, number>>> = {
+  sawmill: 4,
+  farm: 4
+};
 
 /** One active construction plus this many queued (design doc section 12.4). */
 export const MAX_CONSTRUCTION_QUEUE_LENGTH = 3;

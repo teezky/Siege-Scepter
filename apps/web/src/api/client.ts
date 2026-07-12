@@ -1,9 +1,11 @@
 import type {
   ApiError,
   AuthResponse,
+  BuildingId,
   CityView,
   LoginRequest,
   RegisterRequest,
+  SetWorkersResponse,
   StartConstructionResponse
 } from '@siege/shared';
 
@@ -45,5 +47,10 @@ export const api = {
     request<StartConstructionResponse>(`/api/cities/${cityId}/constructions`, {
       method: 'POST',
       body: JSON.stringify({ buildingId })
+    }),
+  setWorkers: (cityId: string, allocation: Partial<Record<BuildingId, number>>) =>
+    request<SetWorkersResponse>(`/api/cities/${cityId}/workers`, {
+      method: 'PUT',
+      body: JSON.stringify({ allocation })
     })
 };

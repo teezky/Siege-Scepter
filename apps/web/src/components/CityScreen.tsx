@@ -3,12 +3,14 @@ import {
   BUILDINGS,
   BUILDING_IDS,
   MAX_CONSTRUCTION_QUEUE_LENGTH,
+  POPULATION,
   RESOURCE_IDS,
+  advanceCity,
   buildingLevelCost,
   buildingLevelSeconds,
+  buildingWorkerSlots,
   canAfford,
   checkBuildingPrerequisites,
-  currentAmounts,
   type BuildingId,
   type CityView,
   type ResourceAmounts
@@ -33,6 +35,7 @@ const RESOURCE_LABELS: Record<string, string> = {
 const BUILDING_LABELS: Record<BuildingId, string> = {
   townHall: 'Town Hall',
   warehouse: 'Warehouse',
+  house: 'House',
   sawmill: 'Sawmill',
   quarry: 'Quarry',
   farm: 'Farm',
@@ -53,22 +56,31 @@ function useServerNow(serverTimeIso: string): number {
 export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
   const nowMs = useServerNow(city.serverTime);
   const [pendingBuilding, setPendingBuilding] = useState<BuildingId | null>(null);
+  const [pendingWorkers, setPendingWorkers] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Predicted amounts: client displays a prediction, the server stays authoritative.
-  const predictedAmounts: ResourceAmounts = useMemo(
+  // Predicted state: the client runs the same shared simulation the server
+  // uses, so the prediction matches; the server stays authoritative.
+  const predicted = useMemo(
     () =>
-      currentAmounts(
+      advanceCity(
         {
           amounts: city.resources.amounts,
-          ratesPerHour: city.resources.ratesPerHour,
-          refTimeMs: new Date(city.serverTime).getTime(),
-          storageCapacity: city.resources.storageCapacity
+          population: city.population.total,
+          nextArrivalAtMs: city.population.nextArrivalAt
+            ? new Date(city.population.nextArrivalAt).getTime()
+            : null,
+          refTimeMs: new Date(city.serverTime).getTime()
         },
+        city.buildings,
         nowMs
       ),
     [city, nowMs]
   );
+  const predictedAmounts: ResourceAmounts = predicted.amounts;
+  const workersAssigned = city.buildings.reduce((sum, b) => sum + b.workers, 0);
+  const freeCitizens = Math.max(0, predicted.population - workersAssigned);
+  const famine = predictedAmounts.food <= 0 && predicted.ratesPerHour.food <= 0;
 
   // When a construction should have completed, fetch the authoritative state.
   useEffect(() => {
@@ -103,6 +115,26 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
     }
   };
 
+  const changeWorkers = async (buildingId: BuildingId, delta: number) => {
+    setError(null);
+    setPendingWorkers(true);
+    try {
+      const allocation: Partial<Record<BuildingId, number>> = {};
+      for (const building of city.buildings) {
+        if (BUILDINGS[building.buildingId].production && building.level > 0) {
+          allocation[building.buildingId] = building.workers;
+        }
+      }
+      allocation[buildingId] = Math.max(0, (allocation[buildingId] ?? 0) + delta);
+      const { city: updated } = await api.setWorkers(city.id, allocation);
+      onCityUpdated(updated);
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setPendingWorkers(false);
+    }
+  };
+
   return (
     <main className="city-screen">
       <section className="resource-bar" aria-label="Resources">
@@ -110,7 +142,9 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
           <div key={resource} className="resource">
             <span className="resource-name">{RESOURCE_LABELS[resource]}</span>
             <span className="resource-amount">{predictedAmounts[resource].toLocaleString()}</span>
-            <span className="resource-rate">+{city.resources.ratesPerHour[resource]}/h</span>
+            <span className={`resource-rate${predicted.ratesPerHour[resource] < 0 ? ' negative' : ''}`}>
+              {formatRate(predicted.ratesPerHour[resource])}/h
+            </span>
           </div>
         ))}
         <div className="resource storage">
@@ -120,6 +154,34 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
       </section>
 
       {error && <div className="error-box">{error}</div>}
+
+      <section className="panel" aria-label="Population">
+        <h2>
+          Population ({predicted.population}/{city.population.housingCapacity})
+        </h2>
+        <p className="muted">
+          {workersAssigned} working · {freeCitizens} free citizens paying{' '}
+          {freeCitizens * POPULATION.taxCoinsPerFreeCitizenPerHour} coins/h in taxes
+        </p>
+        {famine ? (
+          <p className="warning">Famine! The pantry is empty — nobody new will settle here.</p>
+        ) : predicted.ratesPerHour.food < 0 ? (
+          <p className="warning">
+            Food is draining ({formatRate(predicted.ratesPerHour.food)}/h). Assign farm workers!
+          </p>
+        ) : null}
+        {predicted.nextArrivalAtMs !== null &&
+          predicted.population < city.population.housingCapacity &&
+          !famine && (
+            <p className="muted">
+              Next citizen arrives in{' '}
+              <Countdown targetMs={predicted.nextArrivalAtMs} nowMs={nowMs} />
+            </p>
+          )}
+        {predicted.population >= city.population.housingCapacity && (
+          <p className="muted">Housing is full — build or upgrade houses to grow.</p>
+        )}
+      </section>
 
       <section className="panel" aria-label="Construction queue">
         <h2>
@@ -163,6 +225,10 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
             const disabled =
               pendingBuilding !== null || queueFull || prereqFailure !== null || !affordable;
 
+            const cityBuilding = city.buildings.find((b) => b.buildingId === buildingId);
+            const workers = cityBuilding?.workers ?? 0;
+            const slots = level > 0 ? buildingWorkerSlots(def, level) : 0;
+
             return (
               <article key={buildingId} className={`building-card${level > 0 ? '' : ' unbuilt'}`}>
                 <header>
@@ -172,10 +238,37 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
                 {def.production && (
                   <p className="muted">
                     Produces {RESOURCE_LABELS[def.production.resource]}
-                    {level > 0 && ` (+${city.resources.ratesPerHour[def.production.resource]}/h city total)`}
+                    {level > 0 &&
+                      ` (+${workers * def.production.perWorkerPerHour}/h from ${workers} worker${workers === 1 ? '' : 's'})`}
                   </p>
                 )}
+                {def.production && level > 0 && (
+                  <div className="worker-row" aria-label={`${BUILDING_LABELS[buildingId]} workers`}>
+                    <button
+                      className="worker-btn"
+                      onClick={() => changeWorkers(buildingId, -1)}
+                      disabled={pendingWorkers || workers <= 0}
+                      aria-label={`Remove worker from ${BUILDING_LABELS[buildingId]}`}
+                    >
+                      −
+                    </button>
+                    <span className="worker-count">
+                      {workers}/{slots} workers
+                    </span>
+                    <button
+                      className="worker-btn"
+                      onClick={() => changeWorkers(buildingId, 1)}
+                      disabled={pendingWorkers || workers >= slots || freeCitizens <= 0}
+                      aria-label={`Add worker to ${BUILDING_LABELS[buildingId]}`}
+                    >
+                      +
+                    </button>
+                  </div>
+                )}
                 {def.storage && <p className="muted">Increases storage capacity</p>}
+                {def.housing && (
+                  <p className="muted">Houses {def.housing.perLevel} citizens per level</p>
+                )}
                 <div className="cost-row">
                   {Object.entries(cost).map(([resource, amount]) => (
                     <span
@@ -221,6 +314,10 @@ function buttonLabel(
 function Countdown({ targetMs, nowMs }: { targetMs: number; nowMs: number }) {
   const remaining = Math.max(0, Math.ceil((targetMs - nowMs) / 1000));
   return <span className="countdown">{formatDuration(remaining)}</span>;
+}
+
+function formatRate(rate: number): string {
+  return rate >= 0 ? `+${rate}` : `${rate}`;
 }
 
 function formatDuration(totalSeconds: number): string {

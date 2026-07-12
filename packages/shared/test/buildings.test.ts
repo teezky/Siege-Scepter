@@ -5,8 +5,8 @@ import {
   buildingLevelSeconds,
   buildingProductionPerHour,
   buildingStorageCapacity,
+  buildingWorkerSlots,
   checkBuildingPrerequisites,
-  cityProductionPerHour,
   cityStorageCapacity,
   BASE_STORAGE_CAPACITY
 } from '../src/index.js';
@@ -40,25 +40,21 @@ describe('buildingLevelSeconds', () => {
 });
 
 describe('production and storage', () => {
-  it('non-producing buildings produce 0', () => {
+  it('non-producing buildings produce 0 and offer no worker slots', () => {
     expect(buildingProductionPerHour(BUILDINGS.warehouse, 5)).toBe(0);
+    expect(buildingWorkerSlots(BUILDINGS.warehouse, 5)).toBe(0);
   });
 
-  it('level 0 produces and stores nothing', () => {
+  it('production scales with assigned workers', () => {
     expect(buildingProductionPerHour(BUILDINGS.sawmill, 0)).toBe(0);
+    expect(buildingProductionPerHour(BUILDINGS.sawmill, 4)).toBe(80);
     expect(buildingStorageCapacity(BUILDINGS.warehouse, 0)).toBe(0);
   });
 
-  it('aggregates city production per resource', () => {
-    const rates = cityProductionPerHour([
-      { buildingId: 'sawmill', level: 1 },
-      { buildingId: 'farm', level: 1 },
-      { buildingId: 'townHall', level: 1 }
-    ]);
-    expect(rates.wood).toBe(120);
-    expect(rates.food).toBe(110);
-    expect(rates.coins).toBe(40);
-    expect(rates.stone).toBe(0);
+  it('worker slots scale linearly with level', () => {
+    expect(buildingWorkerSlots(BUILDINGS.sawmill, 1)).toBe(6);
+    expect(buildingWorkerSlots(BUILDINGS.sawmill, 3)).toBe(18);
+    expect(buildingWorkerSlots(BUILDINGS.sawmill, 0)).toBe(0);
   });
 
   it('city storage includes base capacity plus warehouses', () => {

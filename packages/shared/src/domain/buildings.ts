@@ -1,7 +1,7 @@
 import type { BuildingDefinition, BuildingId } from '../config/buildings.js';
 import { BUILDINGS } from '../config/buildings.js';
-import type { ResourceAmounts, ResourceId } from '../config/resources.js';
-import { BASE_STORAGE_CAPACITY, emptyResourceAmounts } from '../config/resources.js';
+import type { ResourceId } from '../config/resources.js';
+import { BASE_STORAGE_CAPACITY } from '../config/resources.js';
 
 /**
  * Pure balancing math for buildings. Integer results only — rounding happens
@@ -29,10 +29,16 @@ export function buildingLevelSeconds(def: BuildingDefinition, level: number): nu
   return scaledInt(def.baseBuildSeconds, def.buildTimeGrowthFactor, level);
 }
 
-/** Production per hour of a single building at the given level (0 if not producing). */
-export function buildingProductionPerHour(def: BuildingDefinition, level: number): number {
+/** Worker slots a production building offers at the given level. */
+export function buildingWorkerSlots(def: BuildingDefinition, level: number): number {
   if (!def.production || level <= 0) return 0;
-  return scaledInt(def.production.basePerHour, def.production.growthFactor, level);
+  return def.production.workerSlotsPerLevel * level;
+}
+
+/** Production per hour of a single building given its assigned workers. */
+export function buildingProductionPerHour(def: BuildingDefinition, workers: number): number {
+  if (!def.production || workers <= 0) return 0;
+  return def.production.perWorkerPerHour * workers;
 }
 
 /** Storage capacity contributed by a single building at the given level. */
@@ -46,20 +52,8 @@ export interface CityBuildingLevel {
   level: number;
 }
 
-/** Effective per-resource production rates (per hour) for a whole city. */
-export function cityProductionPerHour(buildings: CityBuildingLevel[]): ResourceAmounts {
-  const rates = emptyResourceAmounts();
-  for (const { buildingId, level } of buildings) {
-    const def = BUILDINGS[buildingId];
-    if (def.production && level > 0) {
-      rates[def.production.resource] += buildingProductionPerHour(def, level);
-    }
-  }
-  return rates;
-}
-
 /** Total storage capacity of a city (base + storage buildings). */
-export function cityStorageCapacity(buildings: CityBuildingLevel[]): number {
+export function cityStorageCapacity(buildings: readonly CityBuildingLevel[]): number {
   let capacity = BASE_STORAGE_CAPACITY;
   for (const { buildingId, level } of buildings) {
     capacity += buildingStorageCapacity(BUILDINGS[buildingId], level);
