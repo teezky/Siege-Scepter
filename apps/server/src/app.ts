@@ -5,6 +5,7 @@ import type { Database } from './db/client.js';
 import { SESSION_COOKIE, registerAuthRoutes } from './domains/auth/routes.js';
 import { resolveSession, type SessionPlayer } from './domains/auth/service.js';
 import { registerCityRoutes } from './domains/cities/routes.js';
+import { registerMilitaryRoutes } from './domains/military/routes.js';
 import type { Env } from './config/env.js';
 import type { Clock } from './lib/clock.js';
 import { AppError } from './lib/errors.js';
@@ -83,6 +84,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   registerAuthRoutes(app, deps.authRateLimit ?? { max: 10, timeWindow: '1 minute' });
   registerCityRoutes(app);
+  registerMilitaryRoutes(app);
 
   return app;
 }

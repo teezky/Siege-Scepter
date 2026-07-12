@@ -23,6 +23,7 @@ export function toCityView(state: CityState, now: Date): CityView {
         return acc;
       }, emptyResourceAmounts()),
       population: state.population,
+      reservedPopulation: state.soldiers,
       nextArrivalAtMs: state.nextArrivalAt ? state.nextArrivalAt.getTime() : null,
       refTimeMs: state.resourceRows.reduce((max, row) => Math.max(max, row.refTime.getTime()), 0),
     },
@@ -48,7 +49,8 @@ export function toCityView(state: CityState, now: Date): CityView {
     population: {
       total: sim.population,
       housingCapacity: cityHousingCapacity(state.buildings, effects),
-      freeCitizens: Math.max(0, sim.population - assignedWorkers(state.buildings)),
+      freeCitizens: Math.max(0, sim.population - assignedWorkers(state.buildings) - state.soldiers),
+      soldiers: state.soldiers,
       nextArrivalAt: sim.nextArrivalAtMs === null ? null : new Date(sim.nextArrivalAtMs).toISOString()
     },
     researchedTechs: state.researchedTechs,

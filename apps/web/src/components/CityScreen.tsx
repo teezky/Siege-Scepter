@@ -17,15 +17,19 @@ import {
   techEffects,
   type BuildingId,
   type CityView,
+  type MilitaryView,
   type ResourceAmounts,
   type TechId
 } from '@siege/shared';
 import { api } from '../api/client.js';
 import { apiErrorMessage } from '../App.js';
+import { MilitaryPanel } from './MilitaryPanel.js';
 
 interface Props {
   city: CityView;
+  military: MilitaryView;
   onCityUpdated: (city: CityView) => void;
+  onMilitaryUpdated: (military: MilitaryView) => void;
   onRefresh: () => Promise<void>;
 }
 
@@ -46,7 +50,8 @@ const BUILDING_LABELS: Record<BuildingId, string> = {
   quarry: 'Quarry',
   farm: 'Farm',
   ironMine: 'Iron Mine',
-  academy: 'Academy'
+  academy: 'Academy',
+  barracks: 'Barracks'
 };
 
 /** Client-side clock offset so predictions follow server time. */
@@ -60,7 +65,7 @@ function useServerNow(serverTimeIso: string): number {
   return nowMs;
 }
 
-export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
+export function CityScreen({ city, military, onCityUpdated, onMilitaryUpdated, onRefresh }: Props) {
   const nowMs = useServerNow(city.serverTime);
   const [pendingBuilding, setPendingBuilding] = useState<BuildingId | null>(null);
   const [pendingWorkers, setPendingWorkers] = useState(false);
@@ -79,6 +84,7 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
         {
           amounts: city.resources.amounts,
           population: city.population.total,
+          reservedPopulation: city.population.soldiers,
           nextArrivalAtMs: city.population.nextArrivalAt
             ? new Date(city.population.nextArrivalAt).getTime()
             : null,
@@ -92,7 +98,10 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
   );
   const predictedAmounts: ResourceAmounts = predicted.amounts;
   const workersAssigned = city.buildings.reduce((sum, b) => sum + b.workers, 0);
-  const freeCitizens = Math.max(0, predicted.population - workersAssigned);
+  const freeCitizens = Math.max(
+    0,
+    predicted.population - workersAssigned - city.population.soldiers
+  );
   const famine = predictedAmounts.food <= 0 && predicted.ratesPerHour.food <= 0;
 
   // When a construction should have completed, fetch the authoritative state.
@@ -191,6 +200,7 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
           {freeCitizens * (POPULATION.taxCoinsPerFreeCitizenPerHour + effects.taxBonusPerFreeCitizen)}{' '}
           coins/h in taxes
         </p>
+        <p className="muted">{city.population.soldiers} serving in the army</p>
         {famine ? (
           <p className="warning">Famine! The pantry is empty — nobody new will settle here.</p>
         ) : predicted.ratesPerHour.food < 0 ? (
@@ -273,6 +283,14 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
           </div>
         )}
       </section>
+
+      <MilitaryPanel
+        city={city}
+        military={military}
+        freeCitizens={freeCitizens}
+        onCityUpdated={onCityUpdated}
+        onMilitaryUpdated={onMilitaryUpdated}
+      />
 
       <section className="panel" aria-label="Buildings">
         <h2>{city.name}</h2>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { CityView, PlayerView } from '@siege/shared';
+import type { CityView, MilitaryView, PlayerView } from '@siege/shared';
 import { api, ApiRequestError } from './api/client.js';
 import { AuthForm } from './components/AuthForm.js';
 import { CityScreen } from './components/CityScreen.js';
@@ -12,10 +12,12 @@ type Session =
 export function App() {
   const [session, setSession] = useState<Session>({ status: 'loading' });
   const [city, setCity] = useState<CityView | null>(null);
+  const [military, setMilitary] = useState<MilitaryView | null>(null);
 
-  const refreshCity = useCallback(async () => {
-    const { city } = await api.getCity();
-    setCity(city);
+  const refreshGame = useCallback(async () => {
+    const [cityResponse, militaryResponse] = await Promise.all([api.getCity(), api.getMilitary()]);
+    setCity(cityResponse.city);
+    setMilitary(militaryResponse.military);
   }, []);
 
   useEffect(() => {
@@ -27,9 +29,12 @@ export function App() {
 
   useEffect(() => {
     if (session.status === 'authenticated') {
-      refreshCity().catch(() => setCity(null));
+      refreshGame().catch(() => {
+        setCity(null);
+        setMilitary(null);
+      });
     }
-  }, [session, refreshCity]);
+  }, [session, refreshGame]);
 
   const handleAuthenticated = (player: PlayerView) => {
     setSession({ status: 'authenticated', player });
@@ -43,6 +48,7 @@ export function App() {
     }
     setSession({ status: 'anonymous' });
     setCity(null);
+    setMilitary(null);
   };
 
   if (session.status === 'loading') {
@@ -64,8 +70,14 @@ export function App() {
           </button>
         </div>
       </header>
-      {city ? (
-        <CityScreen city={city} onCityUpdated={setCity} onRefresh={refreshCity} />
+      {city && military ? (
+        <CityScreen
+          city={city}
+          military={military}
+          onCityUpdated={setCity}
+          onMilitaryUpdated={setMilitary}
+          onRefresh={refreshGame}
+        />
       ) : (
         <div className="page-center">Loading your city…</div>
       )}

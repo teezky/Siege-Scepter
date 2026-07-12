@@ -58,7 +58,8 @@ export function assignedWorkers(buildings: readonly CityBuildingState[]): number
 export function cityRatesPerHour(
   buildings: readonly CityBuildingState[],
   population: number,
-  effects: TechEffects = NO_TECH_EFFECTS
+  effects: TechEffects = NO_TECH_EFFECTS,
+  reservedPopulation = 0
 ): ResourceAmounts {
   const rates = emptyResourceAmounts();
   for (const building of buildings) {
@@ -68,7 +69,7 @@ export function cityRatesPerHour(
     }
   }
   rates.food -= population * POPULATION.foodPerCitizenPerHour;
-  const free = Math.max(0, population - assignedWorkers(buildings));
+  const free = Math.max(0, population - assignedWorkers(buildings) - reservedPopulation);
   rates.coins += free * (POPULATION.taxCoinsPerFreeCitizenPerHour + effects.taxBonusPerFreeCitizen);
   return rates;
 }
@@ -77,6 +78,8 @@ export interface CitySimState {
   /** Amounts at refTime (integers in storage; fractions only inside a walk). */
   amounts: ResourceAmounts;
   population: number;
+  /** Citizens serving outside production buildings (currently soldiers). */
+  reservedPopulation?: number;
   /** When the next citizen arrives; null while housing is full. */
   nextArrivalAtMs: number | null;
   refTimeMs: number;
@@ -109,6 +112,7 @@ export function advanceCity(
 
   const amounts: ResourceAmounts = { ...state.amounts };
   let population = state.population;
+  const reservedPopulation = state.reservedPopulation ?? 0;
   let nextArrivalAtMs = state.nextArrivalAtMs;
   let t = state.refTimeMs;
 
@@ -122,7 +126,7 @@ export function advanceCity(
   // safety net against config mistakes, not a code path.
   const maxIterations = Math.ceil((targetMs - t) / arrivalIntervalMs) + RESOURCE_IDS.length + 8;
   for (let i = 0; i < maxIterations && t < targetMs; i++) {
-    const rates = cityRatesPerHour(buildings, population, effects);
+    const rates = cityRatesPerHour(buildings, population, effects, reservedPopulation);
     const famine = amounts.food <= 0 && rates.food < 0;
 
     let next = targetMs;
@@ -173,6 +177,6 @@ export function advanceCity(
     amounts,
     population,
     nextArrivalAtMs,
-    ratesPerHour: cityRatesPerHour(buildings, population, effects)
+    ratesPerHour: cityRatesPerHour(buildings, population, effects, reservedPopulation)
   };
 }

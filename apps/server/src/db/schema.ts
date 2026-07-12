@@ -1,7 +1,9 @@
 import {
   bigint,
+  boolean,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
@@ -10,6 +12,7 @@ import {
   uniqueIndex,
   uuid
 } from 'drizzle-orm/pg-core';
+import type { ResourceAmounts, UnitCounts } from '@siege/shared';
 
 /**
  * Database schema — the relational source of game truth.
@@ -96,6 +99,52 @@ export const playerResearch = pgTable(
     researchedAt: timestamp('researched_at', { withTimezone: true }).notNull()
   },
   (table) => [primaryKey({ columns: [table.playerId, table.techId] })]
+);
+
+export const cityUnits = pgTable(
+  'city_units',
+  {
+    cityId: uuid('city_id')
+      .notNull()
+      .references(() => cities.id, { onDelete: 'cascade' }),
+    unitId: text('unit_id').notNull(),
+    count: integer('count').notNull()
+  },
+  (table) => [primaryKey({ columns: [table.cityId, table.unitId] })]
+);
+
+export const playerPveCompletions = pgTable(
+  'player_pve_completions',
+  {
+    playerId: uuid('player_id')
+      .notNull()
+      .references(() => players.id, { onDelete: 'cascade' }),
+    encounterId: text('encounter_id').notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull()
+  },
+  (table) => [primaryKey({ columns: [table.playerId, table.encounterId] })]
+);
+
+export const pveBattleReports = pgTable(
+  'pve_battle_reports',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    playerId: uuid('player_id')
+      .notNull()
+      .references(() => players.id, { onDelete: 'cascade' }),
+    cityId: uuid('city_id')
+      .notNull()
+      .references(() => cities.id, { onDelete: 'cascade' }),
+    encounterId: text('encounter_id').notNull(),
+    victory: boolean('victory').notNull(),
+    attackerPower: integer('attacker_power').notNull(),
+    defenderPower: integer('defender_power').notNull(),
+    unitsSent: jsonb('units_sent').$type<UnitCounts>().notNull(),
+    unitsLost: jsonb('units_lost').$type<UnitCounts>().notNull(),
+    reward: jsonb('reward').$type<Partial<ResourceAmounts>>().notNull(),
+    foughtAt: timestamp('fought_at', { withTimezone: true }).notNull()
+  },
+  (table) => [index('pve_reports_player_fought_idx').on(table.playerId, table.foughtAt)]
 );
 
 export const constructionStatus = pgEnum('construction_status', [

@@ -1,4 +1,5 @@
 import type { BuildingId } from '../config/buildings.js';
+import type { PveEncounterId, UnitCounts, UnitId } from '../config/military.js';
 import type { TechId } from '../config/research.js';
 import type { ResourceAmounts } from '../config/resources.js';
 
@@ -44,6 +45,8 @@ export interface CityPopulationView {
   housingCapacity: number;
   /** Citizens not assigned as workers; they pay taxes. */
   freeCitizens: number;
+  /** Citizens currently serving in the army. */
+  soldiers: number;
   /** ISO timestamp of the next citizen arrival; null while housing is full. */
   nextArrivalAt: string | null;
 }
@@ -120,4 +123,55 @@ export interface ResearchTechRequest {
 
 export interface ResearchTechResponse {
   city: CityView;
+}
+
+export interface ArmyView {
+  units: UnitCounts;
+  totalUnits: number;
+  power: number;
+}
+
+export interface PveEncounterView {
+  id: PveEncounterId;
+  name: string;
+  description: string;
+  defenderPower: number;
+  reward: Partial<Record<keyof ResourceAmounts, number>>;
+  prerequisite: PveEncounterId | null;
+  completed: boolean;
+  locked: boolean;
+}
+
+export interface BattleReportView {
+  id: string;
+  encounterId: PveEncounterId;
+  victory: boolean;
+  attackerPower: number;
+  defenderPower: number;
+  unitsSent: UnitCounts;
+  unitsLost: UnitCounts;
+  reward: Partial<Record<keyof ResourceAmounts, number>>;
+  foughtAt: string;
+}
+
+export interface MilitaryView {
+  army: ArmyView;
+  encounters: PveEncounterView[];
+  recentReports: BattleReportView[];
+}
+
+export interface RecruitUnitsRequest {
+  unitId: UnitId;
+  quantity: number;
+}
+
+export interface RecruitUnitsResponse {
+  city: CityView;
+  military: MilitaryView;
+}
+
+export interface AttackPveResponse {
+  city: CityView;
+  military: MilitaryView;
+  report: BattleReportView;
 }
