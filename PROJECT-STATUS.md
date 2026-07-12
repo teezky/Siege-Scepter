@@ -1,6 +1,24 @@
 # Siege & Scepter — Project Status
 
-Updated: 2026-07-12 (session 4 — research shipped; simple army + PvE implemented)
+Updated: 2026-07-12 (session 5 — visual city view with clickable plots + login artwork)
+
+## Visual city view (slice 5, shipped this session)
+
+- Login page uses the `background.png` artwork (re-encoded 279KB JPEG,
+  gradient overlay + blurred auth card).
+- City screen centres on the `town2.png` walled-town scene: 24 hexagonal
+  plots calibrated as percent-polygons over the artwork
+  (`packages/shared/src/config/plots.ts`; calibrated offline by drawing
+  numbered overlays on the image and iterating visually).
+- Click an empty plot → build menu (costs, prereqs, queue gating); click a
+  built plot → details popup (level, worker +/- controls, upgrade). Reserved
+  plots show a hammer + countdown while orders complete.
+- Buildings persist their location: `city_buildings.plot_index` (unique per
+  city) + `construction_orders.plot_index` reserves plots for new buildings;
+  the server validates plot bounds/occupancy; migration 0004 backfills old
+  cities via the same DEFAULT_PLOT_ASSIGNMENT map the code uses.
+- Building markers are emoji placeholders until the Asset Request pipeline
+  (Style Bible v0.1) delivers per-tier sprites.
 
 ## Decisions made (approved by Tanel)
 

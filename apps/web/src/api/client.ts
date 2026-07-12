@@ -50,10 +50,10 @@ export const api = {
   me: () => request<AuthResponse>('/api/auth/me'),
   getCity: () => request<{ city: CityView }>('/api/city'),
   getMilitary: () => request<{ military: MilitaryView }>('/api/military'),
-  startConstruction: (cityId: string, buildingId: string) =>
+  startConstruction: (cityId: string, buildingId: string, plotIndex?: number) =>
     request<StartConstructionResponse>(`/api/cities/${cityId}/constructions`, {
       method: 'POST',
-      body: JSON.stringify({ buildingId })
+      body: JSON.stringify(plotIndex === undefined ? { buildingId } : { buildingId, plotIndex })
     }),
   setWorkers: (cityId: string, allocation: Partial<Record<BuildingId, number>>) =>
     request<SetWorkersResponse>(`/api/cities/${cityId}/workers`, {

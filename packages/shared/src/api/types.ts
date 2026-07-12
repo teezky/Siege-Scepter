@@ -38,6 +38,8 @@ export interface CityBuildingView {
   workers: number;
   /** Worker slots available at the current level (0 for non-production buildings). */
   workerSlots: number;
+  /** Which city plot this building stands on. */
+  plotIndex: number;
 }
 
 export interface CityPopulationView {
@@ -59,6 +61,8 @@ export interface ConstructionOrderView {
   targetLevel: number;
   status: ConstructionStatus;
   queuePosition: number;
+  /** Plot reserved for a brand-new building; null for upgrades. */
+  plotIndex: number | null;
   /** ISO timestamps; null while still queued. */
   startedAt: string | null;
   completesAt: string | null;
@@ -101,6 +105,11 @@ export interface AuthResponse {
 
 export interface StartConstructionRequest {
   buildingId: BuildingId;
+  /**
+   * Plot for a BRAND-NEW building (ignored for upgrades). Optional: the
+   * server falls back to the building's default plot when free.
+   */
+  plotIndex?: number;
 }
 
 export interface StartConstructionResponse {

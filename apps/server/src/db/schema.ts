@@ -84,9 +84,14 @@ export const cityBuildings = pgTable(
     buildingId: text('building_id').notNull(),
     level: integer('level').notNull(),
     /** Workers assigned to this building (0 for non-production buildings). */
-    workers: integer('workers').notNull().default(0)
+    workers: integer('workers').notNull().default(0),
+    /** City scene plot this building stands on. */
+    plotIndex: integer('plot_index').notNull().default(0)
   },
-  (table) => [primaryKey({ columns: [table.cityId, table.buildingId] })]
+  (table) => [
+    primaryKey({ columns: [table.cityId, table.buildingId] }),
+    uniqueIndex('city_buildings_plot_unique').on(table.cityId, table.plotIndex)
+  ]
 );
 
 export const playerResearch = pgTable(
@@ -165,6 +170,8 @@ export const constructionOrders = pgTable(
     targetLevel: integer('target_level').notNull(),
     status: constructionStatus('status').notNull(),
     queuePosition: integer('queue_position').notNull(),
+    /** Plot reserved by a brand-new building order; null for upgrades. */
+    plotIndex: integer('plot_index'),
     startedAt: timestamp('started_at', { withTimezone: true }),
     completesAt: timestamp('completes_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()

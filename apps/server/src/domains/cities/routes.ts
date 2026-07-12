@@ -6,7 +6,8 @@ import { getPlayerCityState, researchTech, setWorkerAllocation, startConstructio
 import { toCityView } from './view.js';
 
 const startConstructionBody = z.object({
-  buildingId: z.enum(BUILDING_IDS)
+  buildingId: z.enum(BUILDING_IDS),
+  plotIndex: z.number().int().min(0).optional()
 });
 
 const setWorkersBody = z.object({
@@ -40,7 +41,8 @@ export function registerCityRoutes(app: FastifyInstance): void {
       player.playerId,
       params.data.cityId,
       body.data.buildingId,
-      app.clock
+      app.clock,
+      body.data.plotIndex
     );
     const city = toCityView(state, app.clock.now());
     const order = city.constructionQueue.find((o) => o.id === orderId) ?? null;

@@ -84,9 +84,9 @@ describe('registration and first city', () => {
 
     expect(city.buildings).toEqual(
       expect.arrayContaining([
-        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0 },
-        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
-        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6 }
+        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0, plotIndex: 9 },
+        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6, plotIndex: 8 },
+        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6, plotIndex: 13 }
       ])
     );
     expect(city.resources.amounts).toEqual(STARTING_RESOURCES);
@@ -179,7 +179,7 @@ describe('construction', () => {
     // Complete — but a fresh quarry has no workers, so no stone flows yet.
     ctx.clock.advanceMs(2000);
     city = await getCity(player);
-    expect(city.buildings).toContainEqual({ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6 });
+    expect(city.buildings).toContainEqual({ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6, plotIndex: 12 });
     expect(city.constructionQueue).toHaveLength(0);
     expect(city.resources.ratesPerHour.stone).toBe(0);
   });
@@ -201,6 +201,49 @@ describe('construction', () => {
     ctx.clock.advanceMs(60 * 60 * 1000);
     city = await getCity(player);
     expect(city.resources.amounts.stone).toBe(STARTING_RESOURCES.stone - cost.stone! + 3 * 15);
+  });
+
+  it('honours the requested plot and rejects occupied ones', async () => {
+    const player = await registerTestPlayer(ctx, 'surveyor');
+
+    const explicit = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/cities/${player.cityId}/constructions`,
+      headers: { cookie: player.cookie },
+      payload: { buildingId: 'quarry', plotIndex: 0 }
+    });
+    expect(explicit.statusCode).toBe(201);
+    expect((JSON.parse(explicit.body) as { city: CityView }).city.constructionQueue[0]!.plotIndex).toBe(0);
+
+    // Town hall stands on plot 9.
+    const occupied = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/cities/${player.cityId}/constructions`,
+      headers: { cookie: player.cookie },
+      payload: { buildingId: 'warehouse', plotIndex: 9 }
+    });
+    expect(occupied.statusCode).toBe(409);
+    expect(JSON.parse(occupied.body).error.code).toBe('INVALID_STATE');
+
+    // Plot 0 is reserved by the quarry order above.
+    const reserved = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/cities/${player.cityId}/constructions`,
+      headers: { cookie: player.cookie },
+      payload: { buildingId: 'house', plotIndex: 0 }
+    });
+    expect(reserved.statusCode).toBe(409);
+
+    // The finished building stands on the chosen plot.
+    ctx.clock.advanceMs(60 * 1000);
+    const city = await getCity(player);
+    expect(city.buildings).toContainEqual({
+      buildingId: 'quarry',
+      level: 1,
+      workers: 0,
+      workerSlots: 6,
+      plotIndex: 0
+    });
   });
 
   it('queues up to the limit and rejects beyond it', async () => {
@@ -228,8 +271,8 @@ describe('construction', () => {
     // Sleep long enough for both to finish.
     ctx.clock.advanceMs(24 * 60 * 60 * 1000);
     const city = await getCity(player);
-    expect(city.buildings).toContainEqual({ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6 });
-    expect(city.buildings).toContainEqual({ buildingId: 'warehouse', level: 1, workers: 0, workerSlots: 0 });
+    expect(city.buildings).toContainEqual({ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6, plotIndex: 12 });
+    expect(city.buildings).toContainEqual({ buildingId: 'warehouse', level: 1, workers: 0, workerSlots: 0, plotIndex: 4 });
     expect(city.constructionQueue).toHaveLength(0);
   });
 
@@ -282,7 +325,7 @@ describe('construction', () => {
     expect(second.resources.amounts).toEqual(first.resources.amounts);
     expect(second.population.total).toBe(first.population.total);
     const quarries = second.buildings.filter((b) => b.buildingId === 'quarry');
-    expect(quarries).toEqual([{ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6 }]);
+    expect(quarries).toEqual([{ buildingId: 'quarry', level: 1, workers: 0, workerSlots: 6, plotIndex: 12 }]);
   });
 });
 

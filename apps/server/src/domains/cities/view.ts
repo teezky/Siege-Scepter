@@ -35,11 +35,12 @@ export function toCityView(state: CityState, now: Date): CityView {
   return {
     id: state.id,
     name: state.name,
-    buildings: state.buildings.map(({ buildingId, level, workers }) => ({
+    buildings: state.buildings.map(({ buildingId, level, workers, plotIndex }) => ({
       buildingId,
       level,
       workers,
-      workerSlots: buildingWorkerSlots(BUILDINGS[buildingId], level, effects)
+      workerSlots: buildingWorkerSlots(BUILDINGS[buildingId], level, effects),
+      plotIndex
     })),
     resources: {
       amounts: sim.amounts,
@@ -62,6 +63,7 @@ export function toCityView(state: CityState, now: Date): CityView {
         targetLevel: o.targetLevel,
         status: o.status,
         queuePosition: o.queuePosition,
+        plotIndex: o.plotIndex,
         startedAt: o.startedAt ? o.startedAt.toISOString() : null,
         completesAt: o.completesAt ? o.completesAt.toISOString() : null
       })),

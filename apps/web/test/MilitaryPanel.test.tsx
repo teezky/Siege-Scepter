@@ -10,11 +10,11 @@ function city(withBarracks = true): CityView {
     id: 'city-1',
     name: 'Test City',
     buildings: [
-      { buildingId: 'townHall', level: 2, workers: 0, workerSlots: 0 },
-      { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
-      { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6 },
+      { buildingId: 'townHall', level: 2, workers: 0, workerSlots: 0, plotIndex: 9 },
+      { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6, plotIndex: 8 },
+      { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6, plotIndex: 13 },
       ...(withBarracks
-        ? [{ buildingId: 'barracks' as const, level: 1, workers: 0, workerSlots: 0 }]
+        ? [{ buildingId: 'barracks' as const, level: 1, workers: 0, workerSlots: 0, plotIndex: 18 }]
         : [])
     ],
     resources: {

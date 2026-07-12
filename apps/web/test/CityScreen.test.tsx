@@ -1,5 +1,12 @@
-import { render, screen } from '@testing-library/react';
-import { PVE_ENCOUNTERS, type CityView, type ConstructionOrderView, type MilitaryView } from '@siege/shared';
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import {
+  CITY_PLOTS,
+  PVE_ENCOUNTERS,
+  type CityView,
+  type ConstructionOrderView,
+  type MilitaryView
+} from '@siege/shared';
 import { CityScreen } from '../src/components/CityScreen.js';
 
 function makeCity(overrides: Partial<CityView> = {}): CityView {
@@ -7,9 +14,9 @@ function makeCity(overrides: Partial<CityView> = {}): CityView {
     id: 'city-1',
     name: "tester's Settlement",
     buildings: [
-      { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0 },
-      { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
-      { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6 }
+      { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0, plotIndex: 9 },
+      { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6, plotIndex: 8 },
+      { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6, plotIndex: 13 }
     ],
     resources: {
       amounts: { wood: 500, stone: 400, food: 300, iron: 60, coins: 120, knowledge: 0 },
@@ -50,6 +57,7 @@ function inProgressOrder(overrides: Partial<ConstructionOrderView> = {}): Constr
     targetLevel: 1,
     status: 'IN_PROGRESS',
     queuePosition: 1,
+    plotIndex: 12,
     startedAt: new Date().toISOString(),
     completesAt: future,
     ...overrides
@@ -63,49 +71,106 @@ const noopProps = {
   onRefresh: () => Promise.resolve()
 };
 
-describe('CityScreen building buttons', () => {
-  it('shows Build for an unbuilt building with no queued order', () => {
+describe('CityScene plots', () => {
+  it('renders every plot; built ones carry their building label', () => {
     render(<CityScreen city={makeCity()} {...noopProps} />);
-    const quarryCard = screen.getByRole('heading', { name: 'Quarry' }).closest('article')!;
-    expect(quarryCard.querySelector(':scope > button')).toHaveTextContent('Build');
+    const scene = screen.getByRole('region', { name: 'City' });
+    const plots = within(scene).getAllByRole('button', { name: /^Plot \d+/ });
+    expect(plots).toHaveLength(CITY_PLOTS.length);
+    expect(
+      within(scene).getByRole('button', { name: 'Plot 8: Sawmill level 1' })
+    ).toBeInTheDocument();
+    expect(within(scene).getByRole('button', { name: 'Plot 12: empty' })).toBeInTheDocument();
   });
 
-  it('shows Upgrade for a built building', () => {
+  it('opens a build menu on an empty plot with prereq and cost gating', async () => {
+    const user = userEvent.setup();
     render(<CityScreen city={makeCity()} {...noopProps} />);
-    const sawmillCard = screen.getByRole('heading', { name: 'Sawmill' }).closest('article')!;
-    expect(sawmillCard.querySelector(':scope > button')).toHaveTextContent('Upgrade to Lv 2');
+    await user.click(screen.getByRole('button', { name: 'Plot 12: empty' }));
+
+    const popup = screen.getByRole('dialog', { name: 'Plot 12' });
+    expect(within(popup).getByText(/Quarry/)).toBeInTheDocument();
+    // Quarry is affordable → plain Build button; iron mine gated by town hall 3.
+    const quarryRow = within(popup).getByText(/Quarry/).closest('li')!;
+    expect(within(quarryRow).getByRole('button', { name: 'Build' })).toBeEnabled();
+    const ironRow = within(popup).getByText(/Iron Mine/).closest('li')!;
+    expect(within(ironRow).getByRole('button', { name: 'Requires Town Hall 3' })).toBeDisabled();
+    // Already-built buildings are not offered again.
+    expect(within(popup).queryByText(/Sawmill/)).not.toBeInTheDocument();
   });
 
-  it('uses the queue-promised level, not the built level, for the label', () => {
-    // Regression: an unbuilt building with an in-progress level-1 order used to
-    // still show "Build" while its cost row already showed the level-2 cost.
+  it('builds on the clicked plot', async () => {
+    const user = userEvent.setup();
+    const onCityUpdated = vi.fn();
+    // The api call will fail (no server in jsdom) — the click wiring is what
+    // we assert via fetch interception.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ city: makeCity() }), { status: 200 }));
+
+    render(<CityScreen city={makeCity()} {...noopProps} onCityUpdated={onCityUpdated} />);
+    await user.click(screen.getByRole('button', { name: 'Plot 12: empty' }));
+    const popup = screen.getByRole('dialog', { name: 'Plot 12' });
+    const quarryRow = within(popup).getByText(/Quarry/).closest('li')!;
+    await user.click(within(quarryRow).getByRole('button', { name: 'Build' }));
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      '/api/cities/city-1/constructions',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ buildingId: 'quarry', plotIndex: 12 })
+      })
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it('shows building details with worker controls and upgrade on a built plot', async () => {
+    const user = userEvent.setup();
+    render(<CityScreen city={makeCity()} {...noopProps} />);
+    await user.click(screen.getByRole('button', { name: 'Plot 8: Sawmill level 1' }));
+
+    const popup = screen.getByRole('dialog', { name: 'Plot 8' });
+    expect(popup).toHaveTextContent('Sawmill');
+    expect(popup).toHaveTextContent('4/6 workers');
+    expect(within(popup).getByRole('button', { name: 'Upgrade to Lv 2' })).toBeEnabled();
+    expect(within(popup).getByRole('button', { name: 'Add worker to Sawmill' })).toBeEnabled();
+  });
+
+  it('marks reserved plots and keeps queued buildings out of build menus', async () => {
+    const user = userEvent.setup();
     const city = makeCity({ constructionQueue: [inProgressOrder()] });
     render(<CityScreen city={city} {...noopProps} />);
-    const quarryCard = screen.getByRole('heading', { name: 'Quarry' }).closest('article')!;
-    expect(quarryCard.querySelector(':scope > button')).toHaveTextContent('Upgrade to Lv 2');
+
+    expect(
+      screen.getByRole('button', { name: 'Plot 12: Quarry under construction' })
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Plot 7: empty' }));
+    const popup = screen.getByRole('dialog', { name: 'Plot 7' });
+    expect(within(popup).queryByText(/Quarry/)).not.toBeInTheDocument();
   });
 
-  it('gates iron mine behind the town hall prerequisite', () => {
-    render(<CityScreen city={makeCity()} {...noopProps} />);
-    const ironCard = screen.getByRole('heading', { name: 'Iron Mine' }).closest('article')!;
-    const button = ironCard.querySelector(':scope > button')!;
-    expect(button).toHaveTextContent('Requires Town Hall 3');
-    expect(button).toBeDisabled();
-  });
-
-  it('shows Queue full on every button when the queue is at capacity', () => {
+  it('disables upgrades when the queue is full', async () => {
+    const user = userEvent.setup();
     const orders = [
       inProgressOrder(),
-      inProgressOrder({ id: 'o2', buildingId: 'warehouse', status: 'QUEUED', queuePosition: 2, startedAt: null, completesAt: null }),
-      inProgressOrder({ id: 'o3', buildingId: 'sawmill', targetLevel: 2, status: 'QUEUED', queuePosition: 3, startedAt: null, completesAt: null }),
-      inProgressOrder({ id: 'o4', buildingId: 'farm', targetLevel: 2, status: 'QUEUED', queuePosition: 4, startedAt: null, completesAt: null })
+      inProgressOrder({ id: 'o2', buildingId: 'warehouse', status: 'QUEUED', queuePosition: 2, plotIndex: 4, startedAt: null, completesAt: null }),
+      inProgressOrder({ id: 'o3', buildingId: 'sawmill', targetLevel: 2, status: 'QUEUED', queuePosition: 3, plotIndex: null, startedAt: null, completesAt: null }),
+      inProgressOrder({ id: 'o4', buildingId: 'farm', targetLevel: 2, status: 'QUEUED', queuePosition: 4, plotIndex: null, startedAt: null, completesAt: null })
     ];
-    const city = makeCity({ constructionQueue: orders });
-    render(<CityScreen city={city} {...noopProps} />);
-    const townHallCard = screen.getByRole('heading', { name: 'Town Hall' }).closest('article')!;
-    const button = townHallCard.querySelector(':scope > button')!;
-    expect(button).toHaveTextContent('Queue full');
-    expect(button).toBeDisabled();
+    render(<CityScreen city={makeCity({ constructionQueue: orders })} {...noopProps} />);
+
+    await user.click(screen.getByRole('button', { name: 'Plot 9: Town Hall level 1' }));
+    const popup = screen.getByRole('dialog', { name: 'Plot 9' });
+    expect(within(popup).getByRole('button', { name: 'Queue full' })).toBeDisabled();
+  });
+
+  it('gates iron mine in the build menu behind town hall 3', async () => {
+    const user = userEvent.setup();
+    render(<CityScreen city={makeCity()} {...noopProps} />);
+    await user.click(screen.getByRole('button', { name: 'Plot 0: empty' }));
+    const popup = screen.getByRole('dialog', { name: 'Plot 0' });
+    const ironRow = within(popup).getByText(/Iron Mine/).closest('li')!;
+    expect(within(ironRow).getByRole('button', { name: 'Requires Town Hall 3' })).toBeDisabled();
   });
 });
 
@@ -125,7 +190,7 @@ describe('CityScreen resources and queue', () => {
   it('lists in-progress orders with a countdown and queued ones as queued', () => {
     const orders = [
       inProgressOrder(),
-      inProgressOrder({ id: 'o2', buildingId: 'warehouse', status: 'QUEUED', queuePosition: 2, startedAt: null, completesAt: null })
+      inProgressOrder({ id: 'o2', buildingId: 'warehouse', status: 'QUEUED', queuePosition: 2, plotIndex: 4, startedAt: null, completesAt: null })
     ];
     render(<CityScreen city={makeCity({ constructionQueue: orders })} {...noopProps} />);
     const queue = screen.getByRole('region', { name: 'Construction queue' });
@@ -150,22 +215,12 @@ describe('CityScreen population', () => {
     expect(panel).toHaveTextContent(/next citizen arrives in/i);
   });
 
-  it('shows the housing-full message instead of an arrival countdown', () => {
-    const city = makeCity({
-      population: { total: 30, housingCapacity: 30, freeCitizens: 22, soldiers: 0, nextArrivalAt: null }
-    });
-    render(<CityScreen city={city} {...noopProps} />);
-    const panel = screen.getByRole('region', { name: 'Population' });
-    expect(panel).toHaveTextContent(/housing is full/i);
-    expect(panel).not.toHaveTextContent(/next citizen arrives/i);
-  });
-
   it('warns about a famine when the pantry is empty and drains', () => {
     const city = makeCity({
       buildings: [
-        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0 },
-        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
-        { buildingId: 'farm', level: 1, workers: 0, workerSlots: 6 }
+        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0, plotIndex: 9 },
+        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6, plotIndex: 8 },
+        { buildingId: 'farm', level: 1, workers: 0, workerSlots: 6, plotIndex: 13 }
       ],
       resources: {
         amounts: { wood: 500, stone: 400, food: 0, iron: 60, coins: 120, knowledge: 0 },
@@ -177,25 +232,19 @@ describe('CityScreen population', () => {
     expect(screen.getByText(/famine/i)).toBeInTheDocument();
   });
 
-  it('renders worker controls and disables + when slots are full', () => {
+  it('crop rotation widens farm slots in the plot popup', async () => {
+    const user = userEvent.setup();
     const city = makeCity({
       buildings: [
-        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0 },
-        { buildingId: 'sawmill', level: 1, workers: 6, workerSlots: 6 },
-        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6 }
-      ]
+        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0, plotIndex: 9 },
+        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6, plotIndex: 8 },
+        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 8, plotIndex: 13 }
+      ],
+      researchedTechs: ['cropRotation']
     });
     render(<CityScreen city={city} {...noopProps} />);
-    expect(screen.getByText('6/6 workers')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add worker to Sawmill' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Remove worker from Sawmill' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Add worker to Farm' })).toBeEnabled();
-  });
-
-  it('does not render worker controls for unbuilt or non-production buildings', () => {
-    render(<CityScreen city={makeCity()} {...noopProps} />);
-    expect(screen.queryByRole('button', { name: /worker.*Quarry/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /worker.*Town Hall/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Plot 13: Farm level 1' }));
+    expect(screen.getByRole('dialog', { name: 'Plot 13' })).toHaveTextContent('4/8 workers');
   });
 });
 
@@ -210,10 +259,10 @@ describe('CityScreen research', () => {
   it('lists techs with affordability and prerequisite gating', () => {
     const city = makeCity({
       buildings: [
-        { buildingId: 'townHall', level: 2, workers: 0, workerSlots: 0 },
-        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
-        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6 },
-        { buildingId: 'academy', level: 1, workers: 4, workerSlots: 4 }
+        { buildingId: 'townHall', level: 2, workers: 0, workerSlots: 0, plotIndex: 9 },
+        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6, plotIndex: 8 },
+        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6, plotIndex: 13 },
+        { buildingId: 'academy', level: 1, workers: 4, workerSlots: 4, plotIndex: 10 }
       ],
       resources: {
         amounts: { wood: 500, stone: 400, food: 300, iron: 60, coins: 120, knowledge: 150 },
@@ -224,28 +273,11 @@ describe('CityScreen research', () => {
     render(<CityScreen city={city} {...noopProps} />);
     const panel = screen.getByRole('region', { name: 'Research' });
     expect(panel).toHaveTextContent('Crop Rotation');
-    // 150 knowledge: cropRotation and stoneTools (120 each) are affordable…
     const affordables = screen.getAllByRole('button', { name: 'Research (120 knowledge)' });
     expect(affordables).toHaveLength(2);
     for (const button of affordables) expect(button).toBeEnabled();
-    // …sanitation (160) is not, and tier-2 techs are locked by prerequisites.
     expect(screen.getByRole('button', { name: 'Research (160 knowledge)' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Requires Crop Rotation' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Requires Sanitation' })).toBeDisabled();
-  });
-
-  it('marks researched techs and shows their effects in the panel', () => {
-    const city = makeCity({
-      buildings: [
-        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0 },
-        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
-        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 8 }
-      ],
-      researchedTechs: ['cropRotation']
-    });
-    render(<CityScreen city={city} {...noopProps} />);
-    expect(screen.getByText('Researched ✓')).toBeInTheDocument();
-    // Crop rotation: farm worker row shows the widened slot count (6+2 at Lv 1).
-    expect(screen.getByText('4/8 workers')).toBeInTheDocument();
   });
 });

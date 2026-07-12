@@ -1,9 +1,12 @@
 import {
   BUILDINGS,
+  CITY_PLOTS,
+  DEFAULT_PLOT_ASSIGNMENT,
   MAX_CONSTRUCTION_QUEUE_LENGTH,
   POPULATION,
   RESOURCE_IDS,
   STARTING_BUILDINGS,
+  STARTING_PLOT_ASSIGNMENT,
   STARTING_RESOURCES,
   STARTING_WORKER_ALLOCATION,
   TECHS,
@@ -87,7 +90,8 @@ export async function foundFirstCity(tx: Tx, playerId: string, name: string, now
       cityId: city.id,
       buildingId,
       level,
-      workers: STARTING_WORKER_ALLOCATION[buildingId] ?? 0
+      workers: STARTING_WORKER_ALLOCATION[buildingId] ?? 0,
+      plotIndex: STARTING_PLOT_ASSIGNMENT[buildingId] ?? DEFAULT_PLOT_ASSIGNMENT[buildingId]
     }))
   );
 
@@ -131,16 +135,20 @@ export async function lockCity(tx: Tx, cityId: string, playerId: string): Promis
   return { ...city, soldiers: armyPopulation(army) };
 }
 
-export async function loadBuildings(tx: DbOrTx, cityId: string): Promise<CityBuildingState[]> {
+/** Building state plus its scene plot (the sim itself never needs the plot). */
+export type CityBuildingRow = CityBuildingState & { plotIndex: number };
+
+export async function loadBuildings(tx: DbOrTx, cityId: string): Promise<CityBuildingRow[]> {
   const rows = await tx
     .select({
       buildingId: cityBuildings.buildingId,
       level: cityBuildings.level,
-      workers: cityBuildings.workers
+      workers: cityBuildings.workers,
+      plotIndex: cityBuildings.plotIndex
     })
     .from(cityBuildings)
     .where(eq(cityBuildings.cityId, cityId));
-  return rows.filter((row): row is CityBuildingState => isBuildingId(row.buildingId));
+  return rows.filter((row): row is CityBuildingRow => isBuildingId(row.buildingId));
 }
 
 interface ResourceRow {
@@ -265,9 +273,13 @@ export async function finalizeDueConstructions(
           .set({ level: due.targetLevel })
           .where(and(eq(cityBuildings.cityId, city.id), eq(cityBuildings.buildingId, due.buildingId)));
       } else {
-        await tx
-          .insert(cityBuildings)
-          .values({ cityId: city.id, buildingId: due.buildingId, level: due.targetLevel, workers: 0 });
+        await tx.insert(cityBuildings).values({
+          cityId: city.id,
+          buildingId: due.buildingId,
+          level: due.targetLevel,
+          workers: 0,
+          plotIndex: due.plotIndex ?? DEFAULT_PLOT_ASSIGNMENT[due.buildingId]
+        });
       }
     }
     await tx
@@ -312,7 +324,7 @@ export interface CityState {
   nextArrivalAt: Date | null;
   soldiers: number;
   researchedTechs: TechId[];
-  buildings: CityBuildingState[];
+  buildings: CityBuildingRow[];
   resourceRows: ResourceRow[];
   orders: {
     id: string;
@@ -320,6 +332,7 @@ export interface CityState {
     targetLevel: number;
     status: 'QUEUED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
     queuePosition: number;
+    plotIndex: number | null;
     startedAt: Date | null;
     completesAt: Date | null;
   }[];
@@ -360,6 +373,7 @@ export async function loadCityState(
         targetLevel: row.targetLevel,
         status: row.status,
         queuePosition: row.queuePosition,
+        plotIndex: row.plotIndex,
         startedAt: row.startedAt,
         completesAt: row.completesAt
       }))
@@ -392,7 +406,8 @@ export async function startConstruction(
   playerId: string,
   cityId: string,
   buildingId: BuildingId,
-  clock: Clock
+  clock: Clock,
+  requestedPlotIndex?: number
 ): Promise<{ state: CityState; orderId: string }> {
   const def = BUILDINGS[buildingId];
 
@@ -447,6 +462,24 @@ export async function startConstruction(
       );
     }
 
+    // A brand-new building needs a free plot to stand on (upgrades keep theirs).
+    let plotIndex: number | null = null;
+    if (targetLevel === 1) {
+      plotIndex = requestedPlotIndex ?? DEFAULT_PLOT_ASSIGNMENT[buildingId];
+      if (!Number.isInteger(plotIndex) || plotIndex < 0 || plotIndex >= CITY_PLOTS.length) {
+        throw new AppError('VALIDATION_FAILED', 'Unknown plot', { plotIndex });
+      }
+      const occupiedBy =
+        buildings.find((b) => b.plotIndex === plotIndex) ??
+        activeOrders.find((o) => o.plotIndex === plotIndex);
+      if (occupiedBy) {
+        throw new AppError('INVALID_STATE', 'Plot is already occupied', {
+          plotIndex,
+          buildingId: occupiedBy.buildingId
+        });
+      }
+    }
+
     // Pay: settle at `now` and subtract the cost (throws if unaffordable).
     const cost = buildingLevelCost(def, targetLevel);
     await settleCity(tx, city, buildings, now, effects, cost);
@@ -463,6 +496,7 @@ export async function startConstruction(
         targetLevel,
         status: hasInProgress ? 'QUEUED' : 'IN_PROGRESS',
         queuePosition: maxPosition + 1,
+        plotIndex,
         startedAt: hasInProgress ? null : now,
         completesAt: hasInProgress ? null : new Date(now.getTime() + seconds * 1000)
       })

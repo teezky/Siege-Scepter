@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   BUILDINGS,
-  BUILDING_IDS,
   MAX_CONSTRUCTION_QUEUE_LENGTH,
   POPULATION,
   RESOURCE_IDS,
@@ -9,11 +8,6 @@ import {
   TECH_BRANCH_LABELS,
   TECH_IDS,
   advanceCity,
-  buildingLevelCost,
-  buildingLevelSeconds,
-  buildingWorkerSlots,
-  canAfford,
-  checkBuildingPrerequisites,
   techEffects,
   type BuildingId,
   type CityView,
@@ -23,6 +17,8 @@ import {
 } from '@siege/shared';
 import { api } from '../api/client.js';
 import { apiErrorMessage } from '../App.js';
+import { BUILDING_LABELS, RESOURCE_LABELS } from '../labels.js';
+import { CityScene } from './CityScene.js';
 import { MilitaryPanel } from './MilitaryPanel.js';
 
 interface Props {
@@ -32,27 +28,6 @@ interface Props {
   onMilitaryUpdated: (military: MilitaryView) => void;
   onRefresh: () => Promise<void>;
 }
-
-const RESOURCE_LABELS: Record<string, string> = {
-  wood: 'Wood',
-  stone: 'Stone',
-  food: 'Food',
-  iron: 'Iron',
-  coins: 'Coins',
-  knowledge: 'Knowledge'
-};
-
-const BUILDING_LABELS: Record<BuildingId, string> = {
-  townHall: 'Town Hall',
-  warehouse: 'Warehouse',
-  house: 'House',
-  sawmill: 'Sawmill',
-  quarry: 'Quarry',
-  farm: 'Farm',
-  ironMine: 'Iron Mine',
-  academy: 'Academy',
-  barracks: 'Barracks'
-};
 
 /** Client-side clock offset so predictions follow server time. */
 function useServerNow(serverTimeIso: string): number {
@@ -125,11 +100,11 @@ export function CityScreen({ city, military, onCityUpdated, onMilitaryUpdated, o
   const queueFull =
     city.constructionQueue.length >= 1 + MAX_CONSTRUCTION_QUEUE_LENGTH + effects.extraQueueSlots;
 
-  const startBuild = async (buildingId: BuildingId) => {
+  const startBuild = async (buildingId: BuildingId, plotIndex?: number) => {
     setError(null);
     setPendingBuilding(buildingId);
     try {
-      const { city: updated } = await api.startConstruction(city.id, buildingId);
+      const { city: updated } = await api.startConstruction(city.id, buildingId, plotIndex);
       onCityUpdated(updated);
     } catch (err) {
       setError(apiErrorMessage(err));
@@ -284,6 +259,19 @@ export function CityScreen({ city, military, onCityUpdated, onMilitaryUpdated, o
         )}
       </section>
 
+      <CityScene
+        city={city}
+        effects={effects}
+        predictedAmounts={predictedAmounts}
+        freeCitizens={freeCitizens}
+        nowMs={nowMs}
+        pending={pendingBuilding !== null || pendingWorkers}
+        queueFull={queueFull}
+        onBuild={startBuild}
+        onUpgrade={startBuild}
+        onChangeWorkers={changeWorkers}
+      />
+
       <MilitaryPanel
         city={city}
         military={military}
@@ -291,109 +279,8 @@ export function CityScreen({ city, military, onCityUpdated, onMilitaryUpdated, o
         onCityUpdated={onCityUpdated}
         onMilitaryUpdated={onMilitaryUpdated}
       />
-
-      <section className="panel" aria-label="Buildings">
-        <h2>{city.name}</h2>
-        <div className="building-grid">
-          {BUILDING_IDS.map((buildingId) => {
-            const def = BUILDINGS[buildingId];
-            const level = levels.get(buildingId) ?? 0;
-            const effectiveLevel = effectiveLevels.get(buildingId) ?? 0;
-            const targetLevel = effectiveLevel + 1;
-            const prereqFailure =
-              targetLevel > def.maxLevel
-                ? { kind: 'maxLevelReached' as const, buildingId }
-                : checkBuildingPrerequisites(buildingId, targetLevel, effectiveLevels);
-            const cost = targetLevel <= def.maxLevel ? buildingLevelCost(def, targetLevel) : {};
-            const affordable = canAfford(predictedAmounts, cost);
-            const seconds = targetLevel <= def.maxLevel ? buildingLevelSeconds(def, targetLevel) : 0;
-            const disabled =
-              pendingBuilding !== null || queueFull || prereqFailure !== null || !affordable;
-
-            const cityBuilding = city.buildings.find((b) => b.buildingId === buildingId);
-            const workers = cityBuilding?.workers ?? 0;
-            const slots = level > 0 ? buildingWorkerSlots(def, level, effects) : 0;
-
-            return (
-              <article key={buildingId} className={`building-card${level > 0 ? '' : ' unbuilt'}`}>
-                <header>
-                  <h3>{BUILDING_LABELS[buildingId]}</h3>
-                  <span className="level">{level > 0 ? `Lv ${level}` : 'Not built'}</span>
-                </header>
-                {def.production && (
-                  <p className="muted">
-                    Produces {RESOURCE_LABELS[def.production.resource]}
-                    {level > 0 &&
-                      ` (+${workers * def.production.perWorkerPerHour}/h from ${workers} worker${workers === 1 ? '' : 's'})`}
-                  </p>
-                )}
-                {def.production && level > 0 && (
-                  <div className="worker-row" aria-label={`${BUILDING_LABELS[buildingId]} workers`}>
-                    <button
-                      className="worker-btn"
-                      onClick={() => changeWorkers(buildingId, -1)}
-                      disabled={pendingWorkers || workers <= 0}
-                      aria-label={`Remove worker from ${BUILDING_LABELS[buildingId]}`}
-                    >
-                      −
-                    </button>
-                    <span className="worker-count">
-                      {workers}/{slots} workers
-                    </span>
-                    <button
-                      className="worker-btn"
-                      onClick={() => changeWorkers(buildingId, 1)}
-                      disabled={pendingWorkers || workers >= slots || freeCitizens <= 0}
-                      aria-label={`Add worker to ${BUILDING_LABELS[buildingId]}`}
-                    >
-                      +
-                    </button>
-                  </div>
-                )}
-                {def.storage && <p className="muted">Increases storage capacity</p>}
-                {def.housing && (
-                  <p className="muted">Houses {def.housing.perLevel} citizens per level</p>
-                )}
-                <div className="cost-row">
-                  {Object.entries(cost).map(([resource, amount]) => (
-                    <span
-                      key={resource}
-                      className={
-                        predictedAmounts[resource as keyof ResourceAmounts] >= (amount ?? 0)
-                          ? 'cost'
-                          : 'cost insufficient'
-                      }
-                    >
-                      {RESOURCE_LABELS[resource]}: {amount}
-                    </span>
-                  ))}
-                  {seconds > 0 && <span className="cost">⏱ {formatDuration(seconds)}</span>}
-                </div>
-                <button onClick={() => startBuild(buildingId)} disabled={disabled}>
-                  {buttonLabel(effectiveLevel, targetLevel, def.maxLevel, prereqFailure, queueFull)}
-                </button>
-              </article>
-            );
-          })}
-        </div>
-      </section>
     </main>
   );
-}
-
-function buttonLabel(
-  level: number,
-  targetLevel: number,
-  maxLevel: number,
-  prereqFailure: ReturnType<typeof checkBuildingPrerequisites>,
-  queueFull: boolean
-): string {
-  if (targetLevel > maxLevel) return 'Max level';
-  if (prereqFailure?.kind === 'missingPrerequisite') {
-    return `Requires ${BUILDING_LABELS[prereqFailure.buildingId]} ${prereqFailure.requiredLevel}`;
-  }
-  if (queueFull) return 'Queue full';
-  return level > 0 ? `Upgrade to Lv ${targetLevel}` : 'Build';
 }
 
 function Countdown({ targetMs, nowMs }: { targetMs: number; nowMs: number }) {

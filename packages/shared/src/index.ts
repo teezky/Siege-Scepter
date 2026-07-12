@@ -1,5 +1,6 @@
 export * from './config/resources.js';
 export * from './config/buildings.js';
+export * from './config/plots.js';
 export * from './config/population.js';
 export * from './config/research.js';
 export * from './config/military.js';
