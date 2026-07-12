@@ -6,12 +6,14 @@ import {
   cityHousingCapacity,
   cityStorageCapacity,
   emptyResourceAmounts,
+  techEffects,
   type CityView
 } from '@siege/shared';
 import type { CityState } from './service.js';
 
 /** Maps internal city state to the public API contract. */
 export function toCityView(state: CityState, now: Date): CityView {
+  const effects = techEffects(state.researchedTechs);
   // Advance in memory (never persisted here — GET stays cheap); the same
   // shared function runs client-side, so both always agree.
   const sim = advanceCity(
@@ -25,7 +27,8 @@ export function toCityView(state: CityState, now: Date): CityView {
       refTimeMs: state.resourceRows.reduce((max, row) => Math.max(max, row.refTime.getTime()), 0),
     },
     state.buildings,
-    now.getTime()
+    now.getTime(),
+    effects
   );
 
   return {
@@ -35,7 +38,7 @@ export function toCityView(state: CityState, now: Date): CityView {
       buildingId,
       level,
       workers,
-      workerSlots: buildingWorkerSlots(BUILDINGS[buildingId], level)
+      workerSlots: buildingWorkerSlots(BUILDINGS[buildingId], level, effects)
     })),
     resources: {
       amounts: sim.amounts,
@@ -44,10 +47,11 @@ export function toCityView(state: CityState, now: Date): CityView {
     },
     population: {
       total: sim.population,
-      housingCapacity: cityHousingCapacity(state.buildings),
+      housingCapacity: cityHousingCapacity(state.buildings, effects),
       freeCitizens: Math.max(0, sim.population - assignedWorkers(state.buildings)),
       nextArrivalAt: sim.nextArrivalAtMs === null ? null : new Date(sim.nextArrivalAtMs).toISOString()
     },
+    researchedTechs: state.researchedTechs,
     constructionQueue: state.orders
       .filter((o) => o.status === 'QUEUED' || o.status === 'IN_PROGRESS')
       .map((o) => ({

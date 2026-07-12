@@ -12,9 +12,9 @@ function makeCity(overrides: Partial<CityView> = {}): CityView {
       { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6 }
     ],
     resources: {
-      amounts: { wood: 500, stone: 400, food: 300, iron: 60, coins: 120 },
+      amounts: { wood: 500, stone: 400, food: 300, iron: 60, coins: 120, knowledge: 0 },
       // Net rates as the server would report: sawmill 80, farm 72 − 24 upkeep, 4 free × 4 tax.
-      ratesPerHour: { wood: 80, stone: 0, food: 48, iron: 0, coins: 16 },
+      ratesPerHour: { wood: 80, stone: 0, food: 48, iron: 0, coins: 16, knowledge: 0 },
       storageCapacity: 1200
     },
     population: {
@@ -24,6 +24,7 @@ function makeCity(overrides: Partial<CityView> = {}): CityView {
       nextArrivalAt: new Date(Date.now() + 10 * 60 * 1000).toISOString()
     },
     constructionQueue: [],
+    researchedTechs: [],
     serverTime: new Date().toISOString(),
     ...overrides
   };
@@ -153,8 +154,8 @@ describe('CityScreen population', () => {
         { buildingId: 'farm', level: 1, workers: 0, workerSlots: 6 }
       ],
       resources: {
-        amounts: { wood: 500, stone: 400, food: 0, iron: 60, coins: 120 },
-        ratesPerHour: { wood: 80, stone: 0, food: -24, iron: 0, coins: 32 },
+        amounts: { wood: 500, stone: 400, food: 0, iron: 60, coins: 120, knowledge: 0 },
+        ratesPerHour: { wood: 80, stone: 0, food: -24, iron: 0, coins: 32, knowledge: 0 },
         storageCapacity: 1200
       }
     });
@@ -181,5 +182,56 @@ describe('CityScreen population', () => {
     render(<CityScreen city={makeCity()} {...noopProps} />);
     expect(screen.queryByRole('button', { name: /worker.*Quarry/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /worker.*Town Hall/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('CityScreen research', () => {
+  it('prompts to build an academy when there is none and nothing is researched', () => {
+    render(<CityScreen city={makeCity()} {...noopProps} />);
+    const panel = screen.getByRole('region', { name: 'Research' });
+    expect(panel).toHaveTextContent(/build an academy/i);
+    expect(panel).not.toHaveTextContent('Crop Rotation');
+  });
+
+  it('lists techs with affordability and prerequisite gating', () => {
+    const city = makeCity({
+      buildings: [
+        { buildingId: 'townHall', level: 2, workers: 0, workerSlots: 0 },
+        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
+        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 6 },
+        { buildingId: 'academy', level: 1, workers: 4, workerSlots: 4 }
+      ],
+      resources: {
+        amounts: { wood: 500, stone: 400, food: 300, iron: 60, coins: 120, knowledge: 150 },
+        ratesPerHour: { wood: 80, stone: 0, food: 48, iron: 0, coins: 16, knowledge: 24 },
+        storageCapacity: 1200
+      }
+    });
+    render(<CityScreen city={city} {...noopProps} />);
+    const panel = screen.getByRole('region', { name: 'Research' });
+    expect(panel).toHaveTextContent('Crop Rotation');
+    // 150 knowledge: cropRotation and stoneTools (120 each) are affordable…
+    const affordables = screen.getAllByRole('button', { name: 'Research (120 knowledge)' });
+    expect(affordables).toHaveLength(2);
+    for (const button of affordables) expect(button).toBeEnabled();
+    // …sanitation (160) is not, and tier-2 techs are locked by prerequisites.
+    expect(screen.getByRole('button', { name: 'Research (160 knowledge)' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Requires Crop Rotation' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Requires Sanitation' })).toBeDisabled();
+  });
+
+  it('marks researched techs and shows their effects in the panel', () => {
+    const city = makeCity({
+      buildings: [
+        { buildingId: 'townHall', level: 1, workers: 0, workerSlots: 0 },
+        { buildingId: 'sawmill', level: 1, workers: 4, workerSlots: 6 },
+        { buildingId: 'farm', level: 1, workers: 4, workerSlots: 8 }
+      ],
+      researchedTechs: ['cropRotation']
+    });
+    render(<CityScreen city={city} {...noopProps} />);
+    expect(screen.getByText('Researched ✓')).toBeInTheDocument();
+    // Crop rotation: farm worker row shows the widened slot count (6+2 at Lv 1).
+    expect(screen.getByText('4/8 workers')).toBeInTheDocument();
   });
 });

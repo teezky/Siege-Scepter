@@ -86,6 +86,18 @@ export const cityBuildings = pgTable(
   (table) => [primaryKey({ columns: [table.cityId, table.buildingId] })]
 );
 
+export const playerResearch = pgTable(
+  'player_research',
+  {
+    playerId: uuid('player_id')
+      .notNull()
+      .references(() => players.id, { onDelete: 'cascade' }),
+    techId: text('tech_id').notNull(),
+    researchedAt: timestamp('researched_at', { withTimezone: true }).notNull()
+  },
+  (table) => [primaryKey({ columns: [table.playerId, table.techId] })]
+);
+
 export const constructionStatus = pgEnum('construction_status', [
   'QUEUED',
   'IN_PROGRESS',

@@ -217,6 +217,44 @@ button.link {
   text-align: center;
 }
 
+.tech-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.tech-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.tech-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.tech-card h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.tech-card.researched {
+  opacity: 0.75;
+  border-color: var(--success);
+}
+
+.tech-done {
+  color: var(--success);
+  font-size: 0.85rem;
+  margin: 0;
+  font-weight: 600;
+}
+
 .resource.storage .resource-amount {
   color: var(--muted);
 }

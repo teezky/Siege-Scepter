@@ -6,6 +6,8 @@ import {
   STARTING_BUILDINGS,
   STARTING_RESOURCES,
   STARTING_WORKER_ALLOCATION,
+  TECHS,
+  TECH_IDS,
   advanceCity,
   assignedWorkers,
   buildingLevelCost,
@@ -13,18 +15,28 @@ import {
   buildingWorkerSlots,
   canAfford,
   checkBuildingPrerequisites,
+  checkResearch,
   cityHousingCapacity,
   emptyResourceAmounts,
   subtractCost,
+  techEffects,
   type BuildingId,
   type CityBuildingState,
   type CitySimState,
   type ResourceAmounts,
-  type ResourceId
+  type ResourceId,
+  type TechEffects,
+  type TechId
 } from '@siege/shared';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { Database } from '../../db/client.js';
-import { cities, cityBuildings, cityResources, constructionOrders } from '../../db/schema.js';
+import {
+  cities,
+  cityBuildings,
+  cityResources,
+  constructionOrders,
+  playerResearch
+} from '../../db/schema.js';
 import type { Clock } from '../../lib/clock.js';
 import { AppError } from '../../lib/errors.js';
 
@@ -40,6 +52,19 @@ function isBuildingId(value: string): value is BuildingId {
 
 function isResourceId(value: string): value is ResourceId {
   return (RESOURCE_IDS as readonly string[]).includes(value);
+}
+
+function isTechId(value: string): value is TechId {
+  return (TECH_IDS as readonly string[]).includes(value);
+}
+
+/** Researched techs of a player (player-global, unlike city state). */
+async function loadResearch(tx: DbOrTx, playerId: string): Promise<TechId[]> {
+  const rows = await tx
+    .select({ techId: playerResearch.techId })
+    .from(playerResearch)
+    .where(eq(playerResearch.playerId, playerId));
+  return rows.map((r) => r.techId).filter(isTechId);
 }
 
 /** Creates the player's first city with starting buildings, workers and resources. */
@@ -159,10 +184,11 @@ async function settleCity(
   city: LoadedCity,
   buildings: CityBuildingState[],
   at: Date,
+  effects: TechEffects,
   adjust?: Partial<Record<ResourceId, number>>
 ): Promise<ResourceAmounts> {
   const rows = await loadResourceRows(tx, city.id);
-  const result = advanceCity(toSimState(city, rows), buildings, at.getTime());
+  const result = advanceCity(toSimState(city, rows), buildings, at.getTime(), effects);
 
   if (adjust && !canAfford(result.amounts, adjust)) {
     throw new AppError('INSUFFICIENT_RESOURCES', 'Not enough resources', {
@@ -200,7 +226,12 @@ async function settleCity(
  * Correctness does not depend on any background job (project instructions
  * sections 9–10, 24).
  */
-export async function finalizeDueConstructions(tx: Tx, city: LoadedCity, now: Date): Promise<boolean> {
+export async function finalizeDueConstructions(
+  tx: Tx,
+  city: LoadedCity,
+  now: Date,
+  effects: TechEffects
+): Promise<boolean> {
   let changed = false;
   // Bounded loop: each iteration completes one order; the queue is small.
   for (;;) {
@@ -218,7 +249,7 @@ export async function finalizeDueConstructions(tx: Tx, city: LoadedCity, now: Da
     // Settle with the OLD building levels up to the completion moment —
     // rates and capacity derive from buildings, so order matters.
     const buildingsBefore = await loadBuildings(tx, city.id);
-    await settleCity(tx, city, buildingsBefore, completedAt);
+    await settleCity(tx, city, buildingsBefore, completedAt, effects);
 
     // Apply the building level.
     if (isBuildingId(due.buildingId)) {
@@ -241,8 +272,8 @@ export async function finalizeDueConstructions(tx: Tx, city: LoadedCity, now: Da
 
     // A housing upgrade may re-open growth: schedule the next arrival.
     const buildingsAfter = await loadBuildings(tx, city.id);
-    if (city.nextArrivalAt === null && city.population < cityHousingCapacity(buildingsAfter)) {
-      city.nextArrivalAt = new Date(completedAt.getTime() + ARRIVAL_INTERVAL_MS);
+    if (city.nextArrivalAt === null && city.population < cityHousingCapacity(buildingsAfter, effects)) {
+      city.nextArrivalAt = new Date(completedAt.getTime() + effects.arrivalIntervalMinutes * 60_000);
       await tx.update(cities).set({ nextArrivalAt: city.nextArrivalAt }).where(eq(cities.id, city.id));
     }
 
@@ -274,6 +305,7 @@ export interface CityState {
   name: string;
   population: number;
   nextArrivalAt: Date | null;
+  researchedTechs: TechId[];
   buildings: CityBuildingState[];
   resourceRows: ResourceRow[];
   orders: {
@@ -287,7 +319,7 @@ export interface CityState {
   }[];
 }
 
-async function loadCityState(tx: DbOrTx, city: LoadedCity): Promise<CityState> {
+async function loadCityState(tx: DbOrTx, city: LoadedCity, researchedTechs: TechId[]): Promise<CityState> {
   const buildings = await loadBuildings(tx, city.id);
   const resourceRows = await loadResourceRows(tx, city.id);
   const orderRows = await tx
@@ -306,6 +338,7 @@ async function loadCityState(tx: DbOrTx, city: LoadedCity): Promise<CityState> {
     name: city.name,
     population: city.population,
     nextArrivalAt: city.nextArrivalAt,
+    researchedTechs,
     buildings,
     resourceRows,
     orders: orderRows
@@ -332,8 +365,9 @@ export async function getPlayerCityState(db: Database, playerId: string, clock: 
       .limit(1);
     if (!cityRow) throw new AppError('NOT_FOUND', 'Player has no city');
     const city = await lockCity(tx, cityRow.id, playerId);
-    await finalizeDueConstructions(tx, city, clock.now());
-    return loadCityState(tx, city);
+    const researched = await loadResearch(tx, playerId);
+    await finalizeDueConstructions(tx, city, clock.now(), techEffects(researched));
+    return loadCityState(tx, city, researched);
   });
 }
 
@@ -354,7 +388,9 @@ export async function startConstruction(
   return db.transaction(async (tx) => {
     const now = clock.now();
     const city = await lockCity(tx, cityId, playerId);
-    await finalizeDueConstructions(tx, city, now);
+    const researched = await loadResearch(tx, playerId);
+    const effects = techEffects(researched);
+    await finalizeDueConstructions(tx, city, now, effects);
 
     const buildings = await loadBuildings(tx, city.id);
     const levels = new Map(buildings.map((b) => [b.buildingId, b.level]));
@@ -369,10 +405,9 @@ export async function startConstruction(
       )
       .orderBy(asc(constructionOrders.queuePosition));
 
-    if (activeOrders.length >= 1 + MAX_CONSTRUCTION_QUEUE_LENGTH) {
-      throw new AppError('QUEUE_FULL', 'Construction queue is full', {
-        limit: 1 + MAX_CONSTRUCTION_QUEUE_LENGTH
-      });
+    const queueLimit = 1 + MAX_CONSTRUCTION_QUEUE_LENGTH + effects.extraQueueSlots;
+    if (activeOrders.length >= queueLimit) {
+      throw new AppError('QUEUE_FULL', 'Construction queue is full', { limit: queueLimit });
     }
 
     // Effective levels = built levels plus levels already promised in the queue.
@@ -403,7 +438,7 @@ export async function startConstruction(
 
     // Pay: settle at `now` and subtract the cost (throws if unaffordable).
     const cost = buildingLevelCost(def, targetLevel);
-    await settleCity(tx, city, buildings, now, cost);
+    await settleCity(tx, city, buildings, now, effects, cost);
 
     const hasInProgress = activeOrders.some((o) => o.status === 'IN_PROGRESS');
     const maxPosition = activeOrders.reduce((max, o) => Math.max(max, o.queuePosition), 0);
@@ -423,7 +458,7 @@ export async function startConstruction(
       .returning({ id: constructionOrders.id });
     if (!order) throw new AppError('INTERNAL', 'Failed to create construction order');
 
-    const state = await loadCityState(tx, city);
+    const state = await loadCityState(tx, city, researched);
     return { state, orderId: order.id };
   });
 }
@@ -443,7 +478,9 @@ export async function setWorkerAllocation(
   return db.transaction(async (tx) => {
     const now = clock.now();
     const city = await lockCity(tx, cityId, playerId);
-    await finalizeDueConstructions(tx, city, now);
+    const researched = await loadResearch(tx, playerId);
+    const effects = techEffects(researched);
+    await finalizeDueConstructions(tx, city, now, effects);
 
     const buildings = await loadBuildings(tx, city.id);
 
@@ -458,7 +495,7 @@ export async function setWorkerAllocation(
       if (!built || built.level <= 0) {
         throw new AppError('INVALID_STATE', `${buildingId} is not built in this city`, { buildingId });
       }
-      const slots = buildingWorkerSlots(def, built.level);
+      const slots = buildingWorkerSlots(def, built.level, effects);
       if (!Number.isInteger(workers) || workers < 0 || workers > slots) {
         throw new AppError('VALIDATION_FAILED', `${buildingId} accepts 0–${slots} workers`, {
           buildingId,
@@ -469,7 +506,7 @@ export async function setWorkerAllocation(
 
     // Settle BEFORE the change: the old allocation earned its keep until now,
     // and the settled population is what the new total is validated against.
-    await settleCity(tx, city, buildings, now);
+    await settleCity(tx, city, buildings, now, effects);
 
     const next = buildings.map((b) => ({
       ...b,
@@ -490,6 +527,65 @@ export async function setWorkerAllocation(
         .where(and(eq(cityBuildings.cityId, city.id), eq(cityBuildings.buildingId, building.buildingId)));
     }
 
-    return loadCityState(tx, city);
+    return loadCityState(tx, city, researched);
+  });
+}
+
+/**
+ * Researches a technology for the player: settles their city at `now`,
+ * validates the tech (not researched, prerequisite met, knowledge afforded),
+ * spends the knowledge and records the tech. Techs are player-global;
+ * knowledge lives in the player's single city for now (documented assumption:
+ * it becomes a player-level pool when multiple cities arrive).
+ */
+export async function researchTech(
+  db: Database,
+  playerId: string,
+  techId: TechId,
+  clock: Clock
+): Promise<CityState> {
+  return db.transaction(async (tx) => {
+    const now = clock.now();
+    const [cityRow] = await tx
+      .select({ id: cities.id })
+      .from(cities)
+      .where(eq(cities.playerId, playerId))
+      .limit(1);
+    if (!cityRow) throw new AppError('NOT_FOUND', 'Player has no city');
+    const city = await lockCity(tx, cityRow.id, playerId);
+
+    const researched = await loadResearch(tx, playerId);
+    const effects = techEffects(researched);
+    await finalizeDueConstructions(tx, city, now, effects);
+
+    const buildings = await loadBuildings(tx, city.id);
+    // Settle first so the knowledge balance is current before checking it.
+    const amounts = await settleCity(tx, city, buildings, now, effects);
+
+    const failure = checkResearch(techId, researched, amounts.knowledge);
+    if (failure) {
+      if (failure.kind === 'alreadyResearched') {
+        throw new AppError('INVALID_STATE', `${techId} is already researched`, { techId });
+      }
+      if (failure.kind === 'missingPrerequisite') {
+        throw new AppError('UNMET_PREREQUISITE', `Requires ${failure.prerequisite} first`, {
+          techId,
+          prerequisite: failure.prerequisite
+        });
+      }
+      throw new AppError('INSUFFICIENT_RESOURCES', 'Not enough knowledge', {
+        cost: failure.cost,
+        available: failure.available
+      });
+    }
+
+    // Pay: subtract knowledge at the already-settled reference time.
+    await tx
+      .update(cityResources)
+      .set({ amountAtRef: amounts.knowledge - TECHS[techId].knowledgeCost })
+      .where(and(eq(cityResources.cityId, city.id), eq(cityResources.resource, 'knowledge')));
+    await tx.insert(playerResearch).values({ playerId, techId, researchedAt: now });
+
+    return loadCityState(tx, city, [...researched, techId]);
   });
 }

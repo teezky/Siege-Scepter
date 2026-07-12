@@ -2,6 +2,7 @@ import type { BuildingDefinition, BuildingId } from '../config/buildings.js';
 import { BUILDINGS } from '../config/buildings.js';
 import type { ResourceId } from '../config/resources.js';
 import { BASE_STORAGE_CAPACITY } from '../config/resources.js';
+import { NO_TECH_EFFECTS, type TechEffects } from './research.js';
 
 /**
  * Pure balancing math for buildings. Integer results only — rounding happens
@@ -30,15 +31,25 @@ export function buildingLevelSeconds(def: BuildingDefinition, level: number): nu
 }
 
 /** Worker slots a production building offers at the given level. */
-export function buildingWorkerSlots(def: BuildingDefinition, level: number): number {
+export function buildingWorkerSlots(
+  def: BuildingDefinition,
+  level: number,
+  effects: TechEffects = NO_TECH_EFFECTS
+): number {
   if (!def.production || level <= 0) return 0;
-  return def.production.workerSlotsPerLevel * level;
+  const extra = def.id === 'farm' ? effects.farmExtraSlotsPerLevel : 0;
+  return (def.production.workerSlotsPerLevel + extra) * level;
 }
 
 /** Production per hour of a single building given its assigned workers. */
-export function buildingProductionPerHour(def: BuildingDefinition, workers: number): number {
+export function buildingProductionPerHour(
+  def: BuildingDefinition,
+  workers: number,
+  effects: TechEffects = NO_TECH_EFFECTS
+): number {
   if (!def.production || workers <= 0) return 0;
-  return def.production.perWorkerPerHour * workers;
+  const bonus = def.id === 'sawmill' || def.id === 'quarry' ? effects.woodStonePerWorkerBonus : 0;
+  return (def.production.perWorkerPerHour + bonus) * workers;
 }
 
 /** Storage capacity contributed by a single building at the given level. */

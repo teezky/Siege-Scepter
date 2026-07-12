@@ -310,6 +310,102 @@ describe('worker allocation', () => {
   });
 });
 
+describe('research', () => {
+  async function research(player: TestPlayer, techId: string) {
+    return ctx.app.inject({
+      method: 'POST',
+      url: '/api/research',
+      headers: { cookie: player.cookie },
+      payload: { techId }
+    });
+  }
+
+  /**
+   * Town hall 2 + academy with scientists, then 24h of knowledge
+   * (4 × 6/h × 24h = 576). A quarry comes first — without one the starting
+   * stone cannot cover town hall 2 (150) plus the academy (120).
+   */
+  async function playerWithKnowledge(name: string): Promise<TestPlayer> {
+    const player = await registerTestPlayer(ctx, name);
+    expect((await build(player, 'quarry')).statusCode).toBe(201);
+    ctx.clock.advanceMs(60 * 1000); // quarry done (25s)
+    expect((await setWorkers(player, { sawmill: 4, farm: 4, quarry: 4 })).statusCode).toBe(200);
+    expect((await build(player, 'townHall')).statusCode).toBe(201);
+    ctx.clock.advanceMs(2 * 60 * 60 * 1000); // town hall 2 done; wood/stone regrow
+    expect((await build(player, 'academy')).statusCode).toBe(201);
+    ctx.clock.advanceMs(3 * 60 * 1000); // academy done (~90s)
+    // Town hall 2 houses 50 citizens, who eat 100 food/h at the cap — a fully
+    // staffed farm (6 × 18 = 108/h) keeps the city fed while knowledge piles up.
+    expect((await setWorkers(player, { sawmill: 4, farm: 6, quarry: 4, academy: 4 })).statusCode).toBe(200);
+    ctx.clock.advanceMs(24 * 60 * 60 * 1000); // 4 scientists × 6/h × 24h = 576 knowledge
+    return player;
+  }
+
+  it('accumulates knowledge from scientists and researches a tech', async () => {
+    const player = await playerWithKnowledge('scholar');
+    let city = await getCity(player);
+    expect(city.resources.amounts.knowledge).toBeGreaterThanOrEqual(576);
+    expect(city.researchedTechs).toEqual([]);
+
+    const response = await research(player, 'stoneTools');
+    expect(response.statusCode).toBe(201);
+    city = (JSON.parse(response.body) as { city: CityView }).city;
+    expect(city.researchedTechs).toEqual(['stoneTools']);
+    // Knowledge was spent…
+    expect(city.resources.amounts.knowledge).toBeLessThan(576 + 200);
+    // …and sawmill workers now produce (20+5) each.
+    expect(city.resources.ratesPerHour.wood).toBe(4 * 25);
+  });
+
+  it('enforces the prerequisite chain and double-research', async () => {
+    const player = await playerWithKnowledge('chainer');
+    expect((await research(player, 'constructionCranes')).statusCode).toBe(409);
+    expect((await research(player, 'stoneTools')).statusCode).toBe(201);
+    const dup = await research(player, 'stoneTools');
+    expect(dup.statusCode).toBe(409);
+    expect(JSON.parse(dup.body).error.code).toBe('INVALID_STATE');
+  });
+
+  it('rejects research without enough knowledge', async () => {
+    const player = await registerTestPlayer(ctx, 'illiterate');
+    const response = await research(player, 'stoneTools');
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error.code).toBe('INSUFFICIENT_RESOURCES');
+  });
+
+  it('construction cranes widen the build queue', async () => {
+    const player = await playerWithKnowledge('craneop');
+    expect((await research(player, 'stoneTools')).statusCode).toBe(201);
+    expect((await research(player, 'constructionCranes')).statusCode).toBe(201);
+
+    // Storage is full after 24h, so five orders are affordable.
+    expect((await build(player, 'sawmill')).statusCode).toBe(201); // active
+    expect((await build(player, 'farm')).statusCode).toBe(201); // queue 1
+    expect((await build(player, 'warehouse')).statusCode).toBe(201); // queue 2
+    expect((await build(player, 'quarry')).statusCode).toBe(201); // queue 3
+    expect((await build(player, 'house')).statusCode).toBe(201); // queue 4 (crane slot)
+    expect((await build(player, 'academy')).statusCode).toBe(201); // queue 5 (crane slot)
+
+    const rejected = await build(player, 'townHall');
+    expect(rejected.statusCode).toBe(409);
+    expect(JSON.parse(rejected.body).error.code).toBe('QUEUE_FULL');
+  });
+
+  it('sanitation speeds up population growth', async () => {
+    const player = await playerWithKnowledge('plumber');
+    // Fill some housing first? No — housing is already full after 24h.
+    // Build a house to open room, then compare arrival cadence.
+    expect((await research(player, 'sanitation')).statusCode).toBe(201);
+    expect((await build(player, 'house')).statusCode).toBe(201);
+    ctx.clock.advanceMs(60 * 1000); // house done (~20s)
+
+    const before = (await getCity(player)).population.total;
+    ctx.clock.advanceMs(31 * 60 * 1000); // 3 arrivals at 10-min cadence
+    const after = (await getCity(player)).population.total;
+    expect(after - before).toBe(3);
+  });
+});
+
 describe('famine', () => {
   it('empty pantry pauses growth, nobody dies, recovery works', async () => {
     const player = await registerTestPlayer(ctx, 'starver');

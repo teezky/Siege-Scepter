@@ -7,6 +7,7 @@ import {
   type ResourceAmounts
 } from '../config/resources.js';
 import { buildingProductionPerHour, cityStorageCapacity } from './buildings.js';
+import { NO_TECH_EFFECTS, type TechEffects } from './research.js';
 
 /**
  * Population + resource simulation (project instructions section 9).
@@ -28,11 +29,17 @@ export interface CityBuildingState {
 }
 
 /** Citizens the city can house (base + town hall + houses). */
-export function cityHousingCapacity(buildings: readonly CityBuildingState[]): number {
+export function cityHousingCapacity(
+  buildings: readonly CityBuildingState[],
+  effects: TechEffects = NO_TECH_EFFECTS
+): number {
   let capacity = POPULATION.baseHousing;
   for (const { buildingId, level } of buildings) {
     const housing = BUILDINGS[buildingId].housing;
-    if (housing && level > 0) capacity += housing.perLevel * level;
+    if (housing && level > 0) {
+      const extra = buildingId === 'house' ? effects.houseExtraHousingPerLevel : 0;
+      capacity += (housing.perLevel + extra) * level;
+    }
   }
   return capacity;
 }
@@ -50,18 +57,19 @@ export function assignedWorkers(buildings: readonly CityBuildingState[]): number
  */
 export function cityRatesPerHour(
   buildings: readonly CityBuildingState[],
-  population: number
+  population: number,
+  effects: TechEffects = NO_TECH_EFFECTS
 ): ResourceAmounts {
   const rates = emptyResourceAmounts();
   for (const building of buildings) {
     const def = BUILDINGS[building.buildingId];
     if (def.production && building.level > 0) {
-      rates[def.production.resource] += buildingProductionPerHour(def, building.workers);
+      rates[def.production.resource] += buildingProductionPerHour(def, building.workers, effects);
     }
   }
   rates.food -= population * POPULATION.foodPerCitizenPerHour;
   const free = Math.max(0, population - assignedWorkers(buildings));
-  rates.coins += free * POPULATION.taxCoinsPerFreeCitizenPerHour;
+  rates.coins += free * (POPULATION.taxCoinsPerFreeCitizenPerHour + effects.taxBonusPerFreeCitizen);
   return rates;
 }
 
@@ -84,7 +92,6 @@ export interface CitySimResult {
 }
 
 const MS_PER_HOUR = 3_600_000;
-const ARRIVAL_INTERVAL_MS = POPULATION.arrivalIntervalMinutes * 60_000;
 
 /**
  * Advances city state from `state.refTimeMs` to `targetMs`.
@@ -93,10 +100,12 @@ const ARRIVAL_INTERVAL_MS = POPULATION.arrivalIntervalMinutes * 60_000;
 export function advanceCity(
   state: CitySimState,
   buildings: readonly CityBuildingState[],
-  targetMs: number
+  targetMs: number,
+  effects: TechEffects = NO_TECH_EFFECTS
 ): CitySimResult {
   const capacity = cityStorageCapacity(buildings);
-  const housing = cityHousingCapacity(buildings);
+  const housing = cityHousingCapacity(buildings, effects);
+  const arrivalIntervalMs = effects.arrivalIntervalMinutes * 60_000;
 
   const amounts: ResourceAmounts = { ...state.amounts };
   let population = state.population;
@@ -105,15 +114,15 @@ export function advanceCity(
 
   // A housing upgrade may have re-opened growth since the state was written.
   if (nextArrivalAtMs === null && population < housing) {
-    nextArrivalAtMs = t + ARRIVAL_INTERVAL_MS;
+    nextArrivalAtMs = t + arrivalIntervalMs;
   }
 
   // Each iteration advances to the next event or to the target. Arrivals are
   // at least one interval apart, so iterations are bounded; the cap is a
   // safety net against config mistakes, not a code path.
-  const maxIterations = Math.ceil((targetMs - t) / ARRIVAL_INTERVAL_MS) + RESOURCE_IDS.length + 8;
+  const maxIterations = Math.ceil((targetMs - t) / arrivalIntervalMs) + RESOURCE_IDS.length + 8;
   for (let i = 0; i < maxIterations && t < targetMs; i++) {
-    const rates = cityRatesPerHour(buildings, population);
+    const rates = cityRatesPerHour(buildings, population, effects);
     const famine = amounts.food <= 0 && rates.food < 0;
 
     let next = targetMs;
@@ -149,10 +158,10 @@ export function advanceCity(
         nextArrivalAtMs = null;
       } else if (amounts.food > 0) {
         population += 1;
-        nextArrivalAtMs = population < housing ? nextArrivalAtMs + ARRIVAL_INTERVAL_MS : null;
+        nextArrivalAtMs = population < housing ? nextArrivalAtMs + arrivalIntervalMs : null;
       } else {
         // Famine: nobody moves in; try again one interval later.
-        nextArrivalAtMs = nextArrivalAtMs + ARRIVAL_INTERVAL_MS;
+        nextArrivalAtMs = nextArrivalAtMs + arrivalIntervalMs;
       }
     }
   }
@@ -160,5 +169,10 @@ export function advanceCity(
   for (const resource of RESOURCE_IDS) {
     amounts[resource] = Math.floor(amounts[resource]);
   }
-  return { amounts, population, nextArrivalAtMs, ratesPerHour: cityRatesPerHour(buildings, population) };
+  return {
+    amounts,
+    population,
+    nextArrivalAtMs,
+    ratesPerHour: cityRatesPerHour(buildings, population, effects)
+  };
 }

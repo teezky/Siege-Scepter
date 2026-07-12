@@ -2,18 +2,17 @@
  * Resource definitions — the authoritative list of resource types.
  *
  * Source of truth: game design document, section 9 ("Ressursside süsteem").
- * MVP slice 1 uses the five tradable base resources; `knowledge` is defined
- * in the type for forward compatibility but has no producer yet (research
- * arrives in a later slice).
+ * Five tradable base resources plus `knowledge` (research slice): produced
+ * by academy scientists, never tradable on the market, not storage-capped.
  */
-export const RESOURCE_IDS = ['wood', 'stone', 'food', 'iron', 'coins'] as const;
+export const RESOURCE_IDS = ['wood', 'stone', 'food', 'iron', 'coins', 'knowledge'] as const;
 
 export type ResourceId = (typeof RESOURCE_IDS)[number];
 
 export type ResourceAmounts = Record<ResourceId, number>;
 
 export function emptyResourceAmounts(): ResourceAmounts {
-  return { wood: 0, stone: 0, food: 0, iron: 0, coins: 0 };
+  return { wood: 0, stone: 0, food: 0, iron: 0, coins: 0, knowledge: 0 };
 }
 
 /** Resources a newly founded first city starts with. */
@@ -22,7 +21,8 @@ export const STARTING_RESOURCES: ResourceAmounts = {
   stone: 200,
   food: 200,
   iron: 60,
-  coins: 120
+  coins: 120,
+  knowledge: 0
 };
 
 /**
