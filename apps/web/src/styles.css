@@ -63,11 +63,16 @@ button.link {
   align-items: center;
   justify-content: center;
   padding: 1rem;
+  background:
+    linear-gradient(rgba(20, 15, 8, 0.35), rgba(20, 15, 8, 0.55)),
+    url('./assets/login-background.jpg') center / cover no-repeat fixed;
 }
 
 .auth-card {
-  background: var(--panel);
+  background: rgba(28, 22, 15, 0.82);
+  backdrop-filter: blur(6px);
   border: 1px solid var(--border);
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55);
   border-radius: 12px;
   padding: 2rem;
   width: 100%;
@@ -81,6 +86,9 @@ button.link {
   margin: 0;
   text-align: center;
   color: var(--accent);
+  font-variant: small-caps;
+  letter-spacing: 0.06em;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
 .subtitle {
