@@ -1,4 +1,5 @@
 import type { BuildingId } from '../config/buildings.js';
+import type { TechId } from '../config/research.js';
 import type { ResourceAmounts } from '../config/resources.js';
 
 /**
@@ -75,6 +76,8 @@ export interface CityView {
   resources: CityResourcesView;
   population: CityPopulationView;
   constructionQueue: ConstructionOrderView[];
+  /** Technologies the owning player has researched (player-global). */
+  researchedTechs: TechId[];
   /** Server clock at response time (ISO), for client-side prediction. */
   serverTime: string;
 }
@@ -108,5 +111,13 @@ export interface SetWorkersRequest {
 }
 
 export interface SetWorkersResponse {
+  city: CityView;
+}
+
+export interface ResearchTechRequest {
+  techId: TechId;
+}
+
+export interface ResearchTechResponse {
   city: CityView;
 }

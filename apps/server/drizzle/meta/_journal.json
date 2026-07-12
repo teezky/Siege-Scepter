@@ -15,6 +15,13 @@
       "when": 1783831437472,
       "tag": "0001_cold_unus",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783834043449,
+      "tag": "0002_furry_joystick",
+      "breakpoints": true
     }
   ]
 }

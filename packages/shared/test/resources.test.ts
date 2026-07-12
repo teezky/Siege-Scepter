@@ -39,8 +39,8 @@ describe('currentAmount', () => {
 
 describe('currentAmounts', () => {
   const snapshot: CityResourceSnapshot = {
-    amounts: { wood: 100, stone: 50, food: 10, iron: 0, coins: 5 },
-    ratesPerHour: { wood: 60, stone: 0, food: 120, iron: 0, coins: 40 },
+    amounts: { wood: 100, stone: 50, food: 10, iron: 0, coins: 5, knowledge: 0 },
+    ratesPerHour: { wood: 60, stone: 0, food: 120, iron: 0, coins: 40, knowledge: 12 },
     refTimeMs: 0,
     storageCapacity: 130
   };
@@ -52,11 +52,12 @@ describe('currentAmounts', () => {
     expect(amounts.food).toBe(130);
     expect(amounts.iron).toBe(0);
     expect(amounts.coins).toBe(45); // coins are not storage-capped
+    expect(amounts.knowledge).toBe(12); // neither is knowledge
   });
 });
 
 describe('canAfford / subtractCost', () => {
-  const amounts = { wood: 100, stone: 50, food: 0, iron: 0, coins: 10 };
+  const amounts = { wood: 100, stone: 50, food: 0, iron: 0, coins: 10, knowledge: 0 };
 
   it('affirms affordable costs and rejects unaffordable ones', () => {
     expect(canAfford(amounts, { wood: 100, stone: 50 })).toBe(true);
@@ -65,7 +66,7 @@ describe('canAfford / subtractCost', () => {
 
   it('subtracts costs immutably', () => {
     const result = subtractCost(amounts, { wood: 40, coins: 10 });
-    expect(result).toEqual({ wood: 60, stone: 50, food: 0, iron: 0, coins: 0 });
+    expect(result).toEqual({ wood: 60, stone: 50, food: 0, iron: 0, coins: 0, knowledge: 0 });
     expect(amounts.wood).toBe(100);
   });
 

@@ -5,15 +5,20 @@ import {
   MAX_CONSTRUCTION_QUEUE_LENGTH,
   POPULATION,
   RESOURCE_IDS,
+  TECHS,
+  TECH_BRANCH_LABELS,
+  TECH_IDS,
   advanceCity,
   buildingLevelCost,
   buildingLevelSeconds,
   buildingWorkerSlots,
   canAfford,
   checkBuildingPrerequisites,
+  techEffects,
   type BuildingId,
   type CityView,
-  type ResourceAmounts
+  type ResourceAmounts,
+  type TechId
 } from '@siege/shared';
 import { api } from '../api/client.js';
 import { apiErrorMessage } from '../App.js';
@@ -29,7 +34,8 @@ const RESOURCE_LABELS: Record<string, string> = {
   stone: 'Stone',
   food: 'Food',
   iron: 'Iron',
-  coins: 'Coins'
+  coins: 'Coins',
+  knowledge: 'Knowledge'
 };
 
 const BUILDING_LABELS: Record<BuildingId, string> = {
@@ -39,7 +45,8 @@ const BUILDING_LABELS: Record<BuildingId, string> = {
   sawmill: 'Sawmill',
   quarry: 'Quarry',
   farm: 'Farm',
-  ironMine: 'Iron Mine'
+  ironMine: 'Iron Mine',
+  academy: 'Academy'
 };
 
 /** Client-side clock offset so predictions follow server time. */
@@ -57,7 +64,12 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
   const nowMs = useServerNow(city.serverTime);
   const [pendingBuilding, setPendingBuilding] = useState<BuildingId | null>(null);
   const [pendingWorkers, setPendingWorkers] = useState(false);
+  const [pendingTech, setPendingTech] = useState<TechId | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // `?? []` guards against a cached pre-research API response (e.g. during HMR).
+  const researchedTechs = city.researchedTechs ?? [];
+  const effects = useMemo(() => techEffects(researchedTechs), [city.researchedTechs]);
 
   // Predicted state: the client runs the same shared simulation the server
   // uses, so the prediction matches; the server stays authoritative.
@@ -73,9 +85,10 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
           refTimeMs: new Date(city.serverTime).getTime()
         },
         city.buildings,
-        nowMs
+        nowMs,
+        effects
       ),
-    [city, nowMs]
+    [city, nowMs, effects]
   );
   const predictedAmounts: ResourceAmounts = predicted.amounts;
   const workersAssigned = city.buildings.reduce((sum, b) => sum + b.workers, 0);
@@ -100,7 +113,8 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
       Math.max(effectiveLevels.get(order.buildingId) ?? 0, order.targetLevel)
     );
   }
-  const queueFull = city.constructionQueue.length >= 1 + MAX_CONSTRUCTION_QUEUE_LENGTH;
+  const queueFull =
+    city.constructionQueue.length >= 1 + MAX_CONSTRUCTION_QUEUE_LENGTH + effects.extraQueueSlots;
 
   const startBuild = async (buildingId: BuildingId) => {
     setError(null);
@@ -112,6 +126,19 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
       setError(apiErrorMessage(err));
     } finally {
       setPendingBuilding(null);
+    }
+  };
+
+  const research = async (techId: TechId) => {
+    setError(null);
+    setPendingTech(techId);
+    try {
+      const { city: updated } = await api.research(techId);
+      onCityUpdated(updated);
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setPendingTech(null);
     }
   };
 
@@ -161,7 +188,8 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
         </h2>
         <p className="muted">
           {workersAssigned} working · {freeCitizens} free citizens paying{' '}
-          {freeCitizens * POPULATION.taxCoinsPerFreeCitizenPerHour} coins/h in taxes
+          {freeCitizens * (POPULATION.taxCoinsPerFreeCitizenPerHour + effects.taxBonusPerFreeCitizen)}{' '}
+          coins/h in taxes
         </p>
         {famine ? (
           <p className="warning">Famine! The pantry is empty — nobody new will settle here.</p>
@@ -185,7 +213,8 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
 
       <section className="panel" aria-label="Construction queue">
         <h2>
-          Construction ({city.constructionQueue.length}/{1 + MAX_CONSTRUCTION_QUEUE_LENGTH})
+          Construction ({city.constructionQueue.length}/
+          {1 + MAX_CONSTRUCTION_QUEUE_LENGTH + effects.extraQueueSlots})
         </h2>
         {city.constructionQueue.length === 0 ? (
           <p className="muted">Nothing under construction. Your builders are idle!</p>
@@ -204,6 +233,44 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      <section className="panel" aria-label="Research">
+        <h2>Research</h2>
+        {!levels.has('academy') && researchedTechs.length === 0 ? (
+          <p className="muted">Build an academy and assign scientists to produce knowledge.</p>
+        ) : (
+          <div className="tech-grid">
+            {TECH_IDS.map((techId) => {
+              const tech = TECHS[techId];
+              const researched = researchedTechs.includes(techId);
+              const prereqMissing =
+                tech.prerequisite !== null && !researchedTechs.includes(tech.prerequisite);
+              const affordable = predictedAmounts.knowledge >= tech.knowledgeCost;
+              return (
+                <article key={techId} className={`tech-card${researched ? ' researched' : ''}`}>
+                  <header>
+                    <h3>{tech.name}</h3>
+                    <span className="level">{TECH_BRANCH_LABELS[tech.branch]}</span>
+                  </header>
+                  <p className="muted">{tech.description}</p>
+                  {researched ? (
+                    <p className="tech-done">Researched ✓</p>
+                  ) : (
+                    <button
+                      onClick={() => research(techId)}
+                      disabled={pendingTech !== null || prereqMissing || !affordable}
+                    >
+                      {prereqMissing
+                        ? `Requires ${TECHS[tech.prerequisite!].name}`
+                        : `Research (${tech.knowledgeCost} knowledge)`}
+                    </button>
+                  )}
+                </article>
+              );
+            })}
+          </div>
         )}
       </section>
 
@@ -227,7 +294,7 @@ export function CityScreen({ city, onCityUpdated, onRefresh }: Props) {
 
             const cityBuilding = city.buildings.find((b) => b.buildingId === buildingId);
             const workers = cityBuilding?.workers ?? 0;
-            const slots = level > 0 ? buildingWorkerSlots(def, level) : 0;
+            const slots = level > 0 ? buildingWorkerSlots(def, level, effects) : 0;
 
             return (
               <article key={buildingId} className={`building-card${level > 0 ? '' : ' unbuilt'}`}>

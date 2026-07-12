@@ -1,6 +1,6 @@
 # Siege & Scepter — Project Status
 
-Updated: 2026-07-12 (session 3 — population slice shipped)
+Updated: 2026-07-12 (session 3 — population shipped; research implemented and verified)
 
 ## Decisions made (approved by Tanel)
 
@@ -35,6 +35,29 @@ Updated: 2026-07-12 (session 3 — population slice shipped)
 - `.github/workflows/ci.yml` — GitHub Actions: pnpm install → typecheck → lint →
   full test suite against a Postgres 17 service container. Green on `main`.
 
+## Research system (slice 3, implemented and verified this session)
+
+- 6th resource `knowledge`: produced by scientists (workers) in the new
+  `academy` building (prereq: town hall 2; 4 slots/level, 6 knowledge/h each),
+  never tradable, not storage-capped.
+- Simple research tree (design doc 16 + MVP 36): 3 branches × 2 techs, linear
+  prerequisites, instant purchase with knowledge — pacing comes from how fast
+  scientists accumulate it. Every tech changes play, not just a number:
+  cropRotation (farm +2 slots/level) → bookkeeping (tax +1/free citizen);
+  stoneTools (sawmill/quarry +5/worker) → constructionCranes (+2 queue slots);
+  sanitation (arrival 15→10 min) → urbanPlanning (house +6 housing/level).
+- Effects fold into one `TechEffects` struct (`techEffects(researched)`),
+  threaded as an optional param through slots/rates/housing/advanceCity —
+  server settles, views and client prediction all stay in agreement.
+- `player_research` table (techs are player-global); knowledge lives in the
+  player's single city for now — documented assumption: becomes a player-level
+  pool when multiple cities arrive.
+- Drizzle migration `0002_furry_joystick.sql` creates `player_research` and
+  backfills the knowledge resource row for existing cities; applied to `siege_dev`.
+- `POST /api/research { techId }`; CityView gained `researchedTechs`.
+- Web: Research panel (branch-labelled tech cards, prereq/cost gating),
+  knowledge in the resource bar, effects-aware prediction and worker slots.
+
 ## Population system (slice 2, shipped this session)
 
 - Growth is event-based: one citizen arrives every 15 min while there is free
@@ -57,6 +80,14 @@ Updated: 2026-07-12 (session 3 — population slice shipped)
 - Full browser smoke test of the golden path: register → first city created →
   resources tick client-side → build quarry → countdown → completion → quarry Lv 1
   producing +90/h stone → logout → login. All working.
+
+## Verified research slice (2026-07-12)
+
+- Shared, server and web TypeScript checks — all green.
+- 90 automated tests — all green: 45 shared domain tests, 27 server integration
+  tests against PostgreSQL, and 18 web component tests.
+- ESLint and the production web build — green.
+- `git diff --check` — clean.
 
 ## Bugs found & fixed while verifying (the code had never run before)
 
@@ -104,7 +135,7 @@ Updated: 2026-07-12 (session 3 — population slice shipped)
 
 ## Next steps
 
-1. Next slice candidates (design doc progression, section 6): research (simple
-   research tree, knowledge resource) or current-slice polish (queue cancellation,
-   satisfaction) or a public deploy so friends can test.
+1. Next slice candidates (design doc progression, section 6): PvE encounter +
+   simple army (step 6), current-slice polish (queue cancellation, satisfaction),
+   or a public deploy so friends can test.
 2. Keep "How to Work in This Project.md" section 42 in sync.

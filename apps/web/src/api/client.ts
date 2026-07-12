@@ -5,8 +5,10 @@ import type {
   CityView,
   LoginRequest,
   RegisterRequest,
+  ResearchTechResponse,
   SetWorkersResponse,
-  StartConstructionResponse
+  StartConstructionResponse,
+  TechId
 } from '@siege/shared';
 
 export class ApiRequestError extends Error {
@@ -52,5 +54,10 @@ export const api = {
     request<SetWorkersResponse>(`/api/cities/${cityId}/workers`, {
       method: 'PUT',
       body: JSON.stringify({ allocation })
+    }),
+  research: (techId: TechId) =>
+    request<ResearchTechResponse>('/api/research', {
+      method: 'POST',
+      body: JSON.stringify({ techId })
     })
 };

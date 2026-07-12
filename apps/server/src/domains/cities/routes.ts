@@ -1,8 +1,8 @@
-import { BUILDING_IDS } from '@siege/shared';
+import { BUILDING_IDS, TECH_IDS } from '@siege/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors.js';
-import { getPlayerCityState, setWorkerAllocation, startConstruction } from './service.js';
+import { getPlayerCityState, researchTech, setWorkerAllocation, startConstruction } from './service.js';
 import { toCityView } from './view.js';
 
 const startConstructionBody = z.object({
@@ -11,6 +11,10 @@ const startConstructionBody = z.object({
 
 const setWorkersBody = z.object({
   allocation: z.record(z.enum(BUILDING_IDS), z.number().int().min(0))
+});
+
+const researchBody = z.object({
+  techId: z.enum(TECH_IDS)
 });
 
 const cityParams = z.object({
@@ -58,6 +62,16 @@ export function registerCityRoutes(app: FastifyInstance): void {
       body.data.allocation,
       app.clock
     );
+    return { city: toCityView(state, app.clock.now()) };
+  });
+
+  app.post('/api/research', async (request, reply) => {
+    const player = request.requirePlayer();
+    const body = researchBody.safeParse(request.body);
+    if (!body.success) throw new AppError('VALIDATION_FAILED', 'Invalid or unknown techId');
+
+    const state = await researchTech(app.db, player.playerId, body.data.techId, app.clock);
+    reply.code(201);
     return { city: toCityView(state, app.clock.now()) };
   });
 }

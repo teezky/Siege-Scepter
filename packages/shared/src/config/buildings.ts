@@ -17,7 +17,8 @@ export const BUILDING_IDS = [
   'sawmill',
   'quarry',
   'farm',
-  'ironMine'
+  'ironMine',
+  'academy'
 ] as const;
 
 export type BuildingId = (typeof BUILDING_IDS)[number];
@@ -143,6 +144,19 @@ export const BUILDINGS: Record<BuildingId, BuildingDefinition> = {
     buildTimeGrowthFactor: 1.5,
     production: { resource: 'iron', perWorkerPerHour: 10, workerSlotsPerLevel: 6 },
     prerequisites: [{ buildingId: 'townHall', level: 3 }]
+  },
+  academy: {
+    id: 'academy',
+    category: 'production',
+    maxLevel: 20,
+    baseCost: { wood: 150, stone: 120 },
+    costGrowthFactor: 1.5,
+    baseBuildSeconds: 90,
+    buildTimeGrowthFactor: 1.5,
+    // Workers assigned here are the city's scientists (design doc 11.1);
+    // knowledge is never tradable and not storage-capped (design doc 9).
+    production: { resource: 'knowledge', perWorkerPerHour: 6, workerSlotsPerLevel: 4 },
+    prerequisites: [{ buildingId: 'townHall', level: 2 }]
   }
 };
 
